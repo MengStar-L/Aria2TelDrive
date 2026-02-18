@@ -56,10 +56,9 @@ async def test_teldrive():
 async def test_path_consistency():
     """测试下载目录与上传目录是否一致
     
-    流程：通过 aria2 下载 1MB 测试文件到 download_dir，
-    然后检查 upload_dir 中是否出现该文件，最后清理。
+    在 download_dir 中创建测试文件，然后检查 upload_dir 中是否可见。
     """
-    import asyncio
+    import os
     import uuid
 
     config = load_config()
@@ -69,81 +68,37 @@ async def test_path_consistency():
     if not upload_dir:
         upload_dir = download_dir
 
-    # 使用唯一文件名防止冲突
     test_filename = f"_path_test_{uuid.uuid4().hex[:8]}.tmp"
-    test_url = "https://speed.hetzner.de/1MB.bin"
+    download_path = os.path.join(download_dir, test_filename)
+    upload_path = os.path.join(upload_dir, test_filename)
 
-    aria2 = Aria2Client(
-        rpc_url=config["aria2"]["rpc_url"],
-        rpc_port=config["aria2"]["rpc_port"],
-        rpc_secret=config["aria2"]["rpc_secret"]
-    )
-
-    gid = None
     try:
-        # 1. 用 aria2 下载测试文件
-        gid = await aria2.add_uri(test_url, {
-            "dir": download_dir,
-            "out": test_filename
-        })
+        # 确保 download_dir 存在
+        os.makedirs(download_dir, exist_ok=True)
 
-        # 2. 等待下载完成 (最多 30 秒)
-        import os
-        for _ in range(60):
-            await asyncio.sleep(0.5)
-            status = await aria2.tell_status(gid)
-            s = status.get("status", "")
-            if s == "complete":
-                break
-            if s in ("error", "removed"):
-                error_msg = status.get("errorMessage", "下载失败")
-                return {"success": False, "message": f"aria2 下载测试文件失败: {error_msg}"}
-        else:
-            # 超时
-            try:
-                await aria2.remove(gid)
-            except Exception:
-                pass
-            return {"success": False, "message": "下载测试文件超时 (30秒)"}
+        # 在 download_dir 中创建 1MB 测试文件
+        with open(download_path, "wb") as f:
+            f.write(b"\x00" * (1024 * 1024))
 
-        # 3. 检查 upload_dir 中是否存在该文件
-        upload_path = os.path.join(upload_dir, test_filename)
-        download_path = os.path.join(download_dir, test_filename)
-
+        # 检查 upload_dir 中是否能看到
         if os.path.exists(upload_path):
-            # 清理
-            try:
-                os.remove(upload_path)
-            except Exception:
-                pass
-            # 如果 upload_path != download_path，也尝试清理 download_path
-            if os.path.normpath(upload_path) != os.path.normpath(download_path):
-                try:
-                    os.remove(download_path)
-                except Exception:
-                    pass
             return {
                 "success": True,
-                "message": f"✅ 路径一致！aria2 下载目录与上传文件目录指向同一位置"
+                "message": f"✅ 路径一致！下载目录({download_dir})与上传目录({upload_dir})指向同一位置"
             }
         else:
-            # 清理 download_path
-            try:
-                os.remove(download_path)
-            except Exception:
-                pass
             return {
                 "success": False,
-                "message": f"❌ 路径不一致！文件已下载到 {download_dir}，但在 {upload_dir} 中找不到"
+                "message": f"❌ 路径不一致！文件创建在 {download_dir}，但在 {upload_dir} 中找不到"
             }
-
     except Exception as e:
         return {"success": False, "message": f"测试失败: {str(e)}"}
     finally:
-        # 从 aria2 中移除任务记录
-        if gid:
+        # 清理测试文件
+        for p in (download_path, upload_path):
             try:
-                await aria2.remove(gid)
+                os.remove(p)
             except Exception:
                 pass
+
 
