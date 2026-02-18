@@ -61,6 +61,7 @@ class TaskManager:
             cfg = self.config
             options = {
                 "max-concurrent-downloads": str(cfg["aria2"].get("max_concurrent", 3)),
+                "dir": cfg["aria2"].get("download_dir", "./downloads"),
             }
             await self.aria2.change_global_option(options)
             logger.info(f"已同步 aria2 全局选项: {options}")
