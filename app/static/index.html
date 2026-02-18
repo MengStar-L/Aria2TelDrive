@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pikpak2TelDrive</title>
+    <meta name="description" content="aria2 下载 + TelDrive 上传中转服务管理面板">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="app">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    <span>Pikpak2TelDrive</span>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-item active" data-page="dashboard" id="nav-dashboard">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="7" height="7" rx="1" />
+                        <rect x="14" y="3" width="7" height="7" rx="1" />
+                        <rect x="3" y="14" width="7" height="7" rx="1" />
+                        <rect x="14" y="14" width="7" height="7" rx="1" />
+                    </svg>
+                    <span>仪表盘</span>
+                </a>
+                <a href="#" class="nav-item" data-page="tasks" id="nav-tasks">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                        <line x1="16" y1="13" x2="8" y2="13" />
+                        <line x1="16" y1="17" x2="8" y2="17" />
+                        <polyline points="10 9 9 9 8 9" />
+                    </svg>
+                    <span>任务列表</span>
+                </a>
+                <a href="#" class="nav-item" data-page="settings" id="nav-settings">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3" />
+                        <path
+                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                    </svg>
+                    <span>设置</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="connection-status">
+                    <span class="status-dot" id="ws-status"></span>
+                    <span id="ws-status-text">未连接</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 主内容 -->
+        <main class="main-content">
+            <!-- 仪表盘页面 -->
+            <section class="page active" id="page-dashboard">
+                <div class="page-header">
+                    <h1>仪表盘</h1>
+                    <button class="btn btn-primary" id="btn-add-task-dash">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="12" y1="5" x2="12" y2="19" />
+                            <line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                        添加任务
+                    </button>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon downloading">
+                            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                <polyline points="7 10 12 15 17 10" />
+                                <line x1="12" y1="15" x2="12" y2="3" />
+                            </svg>
+                        </div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-downloading">0</span>
+                            <span class="stat-label">下载中</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon uploading">
+                            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                <polyline points="17 8 12 3 7 8" />
+                                <line x1="12" y1="3" x2="12" y2="15" />
+                            </svg>
+                        </div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-uploading">0</span>
+                            <span class="stat-label">上传中</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon completed">
+                            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                                <polyline points="22 4 12 14.01 9 11.01" />
+                            </svg>
+                        </div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-completed">0</span>
+                            <span class="stat-label">已完成</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon speed">
+                            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                            </svg>
+                        </div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-speed">0 B/s</span>
+                            <span class="stat-label">下载速度</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 最近任务 -->
+                <div class="section-card">
+                    <div class="section-header">
+                        <h2>最近任务</h2>
+                    </div>
+                    <div class="recent-tasks" id="recent-tasks">
+                        <div class="empty-state">
+                            <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor"
+                                stroke-width="1.5" opacity="0.3">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                <polyline points="14 2 14 8 20 8" />
+                            </svg>
+                            <p>暂无任务</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 任务列表页面 -->
+            <section class="page" id="page-tasks">
+                <div class="page-header">
+                    <h1>任务列表</h1>
+                    <button class="btn btn-primary" id="btn-add-task">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="12" y1="5" x2="12" y2="19" />
+                            <line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                        添加任务
+                    </button>
+                </div>
+
+                <div class="task-filters">
+                    <button class="filter-btn active" data-filter="all">全部</button>
+                    <button class="filter-btn" data-filter="downloading">下载中</button>
+                    <button class="filter-btn" data-filter="uploading">上传中</button>
+                    <button class="filter-btn" data-filter="completed">已完成</button>
+                    <button class="filter-btn" data-filter="failed">失败</button>
+                </div>
+
+                <div class="task-list" id="task-list">
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor"
+                            stroke-width="1.5" opacity="0.3">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                            <polyline points="14 2 14 8 20 8" />
+                        </svg>
+                        <p>暂无任务</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 设置页面 -->
+            <section class="page" id="page-settings">
+                <div class="page-header">
+                    <h1>设置</h1>
+                </div>
+
+                <div class="settings-grid">
+                    <!-- aria2 设置 -->
+                    <div class="settings-card">
+                        <div class="settings-card-header">
+                            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                <polyline points="7 10 12 15 17 10" />
+                                <line x1="12" y1="15" x2="12" y2="3" />
+                            </svg>
+                            <h3>aria2 设置</h3>
+                        </div>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label for="aria2-rpc-url">RPC 地址</label>
+                                <input type="text" id="aria2-rpc-url" placeholder="http://localhost">
+                            </div>
+                            <div class="form-group">
+                                <label for="aria2-rpc-port">RPC 端口</label>
+                                <input type="number" id="aria2-rpc-port" placeholder="6800">
+                            </div>
+                            <div class="form-group">
+                                <label for="aria2-rpc-secret">RPC 密钥</label>
+                                <input type="password" id="aria2-rpc-secret" placeholder="留空表示不使用密钥">
+                            </div>
+                            <div class="form-group">
+                                <label for="aria2-max-concurrent">最大并发下载</label>
+                                <input type="number" id="aria2-max-concurrent" placeholder="3" min="1" max="16">
+                            </div>
+                            <div class="form-group">
+                                <label for="aria2-download-dir">下载目录</label>
+                                <input type="text" id="aria2-download-dir" placeholder="./downloads">
+                            </div>
+                            <button class="btn btn-outline" id="btn-test-aria2">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                                </svg>
+                                测试连接
+                            </button>
+                            <div class="test-result" id="aria2-test-result"></div>
+                        </div>
+                    </div>
+
+                    <!-- TelDrive 设置 -->
+                    <div class="settings-card">
+                        <div class="settings-card-header">
+                            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                <polyline points="17 8 12 3 7 8" />
+                                <line x1="12" y1="3" x2="12" y2="15" />
+                            </svg>
+                            <h3>TelDrive 设置</h3>
+                        </div>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label for="td-api-host">API 地址</label>
+                                <input type="text" id="td-api-host" placeholder="http://localhost:8080">
+                            </div>
+                            <div class="form-group">
+                                <label for="td-access-token">访问令牌 (access_token)</label>
+                                <input type="password" id="td-access-token" placeholder="从浏览器 Cookie 获取">
+                            </div>
+                            <div class="form-group">
+                                <label for="td-channel-id">频道 ID</label>
+                                <input type="number" id="td-channel-id" placeholder="0 表示默认">
+                            </div>
+                            <div class="form-group">
+                                <label for="td-chunk-size">上传分块大小</label>
+                                <select id="td-chunk-size">
+                                    <option value="100M">100 MB</option>
+                                    <option value="200M">200 MB</option>
+                                    <option value="500M" selected>500 MB</option>
+                                    <option value="1G">1 GB</option>
+                                    <option value="2G">2 GB</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="td-upload-concurrency">上传并发数</label>
+                                <input type="number" id="td-upload-concurrency" placeholder="4" min="1" max="8">
+                            </div>
+                            <div class="form-group">
+                                <label for="td-upload-dir">上传文件目录</label>
+                                <input type="text" id="td-upload-dir" placeholder="留空则使用 aria2 下载目录">
+                            </div>
+                            <div class="form-group">
+                                <label for="td-target-path">默认上传路径</label>
+                                <input type="text" id="td-target-path" placeholder="/">
+                            </div>
+                            <button class="btn btn-outline" id="btn-test-teldrive">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                                </svg>
+                                测试连接
+                            </button>
+                            <div class="test-result" id="teldrive-test-result"></div>
+                        </div>
+                    </div>
+
+                    <!-- 通用设置 -->
+                    <div class="settings-card">
+                        <div class="settings-card-header">
+                            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <circle cx="12" cy="12" r="3" />
+                                <path
+                                    d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68 1.65 1.65 0 0 0 10 3.17V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                            </svg>
+                            <h3>通用设置</h3>
+                        </div>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label for="gen-max-retries">最大重试次数</label>
+                                <input type="number" id="gen-max-retries" placeholder="3" min="0" max="10">
+                            </div>
+                            <div class="form-group">
+                                <label for="gen-max-tasks">最大并发任务数</label>
+                                <input type="number" id="gen-max-tasks" placeholder="3" min="1" max="10">
+                            </div>
+                            <div class="form-group checkbox-group">
+                                <label>
+                                    <input type="checkbox" id="gen-auto-delete" checked>
+                                    <span>上传完成后自动删除本地文件</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-actions">
+                    <button class="btn btn-primary" id="btn-save-settings">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                            <polyline points="17 21 17 13 7 13 7 21" />
+                            <polyline points="7 3 7 8 15 8" />
+                        </svg>
+                        保存设置
+                    </button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- 添加任务弹窗 -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>添加下载任务</h3>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="task-url">下载链接</label>
+                    <input type="text" id="task-url" placeholder="https://example.com/file.zip">
+                </div>
+                <div class="form-group">
+                    <label for="task-filename">文件名 (可选)</label>
+                    <input type="text" id="task-filename" placeholder="自动识别文件名">
+                </div>
+                <div class="form-group">
+                    <label for="task-path">TelDrive 目标路径</label>
+                    <input type="text" id="task-path" placeholder="/" value="/">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" id="modal-cancel">取消</button>
+                <button class="btn btn-primary" id="modal-submit">开始下载</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+
+</html>

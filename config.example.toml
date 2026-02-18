@@ -1,0 +1,23 @@
+[server]
+port = 8010
+
+[aria2]
+rpc_url = "http://localhost"
+rpc_port = 6800
+rpc_secret = ""
+max_concurrent = 3
+download_dir = "./downloads"
+
+[teldrive]
+api_host = "http://localhost:7888"
+access_token = ""
+channel_id = 0
+chunk_size = "500M"
+upload_concurrency = 4
+upload_dir = ""
+target_path = "/"
+
+[general]
+max_retries = 3
+auto_delete = true
+max_tasks = 3
