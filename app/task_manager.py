@@ -52,11 +52,28 @@ class TaskManager:
         """重新加载配置并重建客户端"""
         self.config = load_config()
         self._init_clients()
+        # 异步同步 aria2 全局选项
+        asyncio.create_task(self._apply_aria2_options())
+
+    async def _apply_aria2_options(self):
+        """将本地配置同步到远端 aria2（max-concurrent-downloads, dir）"""
+        try:
+            cfg = self.config
+            options = {
+                "max-concurrent-downloads": str(cfg["aria2"].get("max_concurrent", 3)),
+                "dir": get_download_dir(cfg)
+            }
+            await self.aria2.change_global_option(options)
+            logger.info(f"已同步 aria2 全局选项: {options}")
+        except Exception as e:
+            logger.warning(f"同步 aria2 全局选项失败: {e}")
 
     async def start(self):
         """启动任务管理器"""
         await db.init_db()
         self._init_clients()
+        # 同步配置到 aria2
+        await self._apply_aria2_options()
         # 加载已有任务的 GID 到缓存
         all_tasks = await db.get_all_tasks()
         for t in all_tasks:

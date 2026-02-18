@@ -94,6 +94,10 @@ class Aria2Client:
         """获取全局统计"""
         return await self._call("aria2.getGlobalStat")
 
+    async def change_global_option(self, options: dict):
+        """修改 aria2 全局配置"""
+        return await self._call("aria2.changeGlobalOption", options)
+
     async def test_connection(self) -> dict:
         """测试连接"""
         try:
