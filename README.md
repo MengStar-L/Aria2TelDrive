@@ -1,4 +1,4 @@
-# Pikpak2TelDrive
+# Aria2TelDrive
 
 aria2 下载 + TelDrive 上传中转服务 —— 通过 Web 面板管理下载任务，自动上传到 TelDrive，支持实时进度监控。
 
@@ -17,13 +17,13 @@ aria2 下载 + TelDrive 上传中转服务 —— 通过 Web 面板管理下载�
 ### 1. 下载项目
 
 ```bash
-git clone https://github.com/MengStar-L/Pikpak2TelDrive.git /opt/Pikpak2TelDrive
+git clone https://github.com/MengStar-L/Aria2TelDrive.git /opt/Aria2TelDrive
 ```
 
 ### 2. 创建虚拟环境并安装依赖
 
 ```bash
-cd /opt/Pikpak2TelDrive
+cd /opt/Aria2TelDrive
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -79,8 +79,8 @@ aria2c --enable-rpc --rpc-listen-all=true --rpc-listen-port=6800
 ### 5. 运行
 
 ```bash
-source /opt/Pikpak2TelDrive/venv/bin/activate
-cd /opt/Pikpak2TelDrive
+source /opt/Aria2TelDrive/venv/bin/activate
+cd /opt/Aria2TelDrive
 python app/main.py
 ```
 
@@ -91,20 +91,20 @@ python app/main.py
 复制项目中的服务文件：
 
 ```bash
-cp /opt/Pikpak2TelDrive/pikpak2teldrive.service /etc/systemd/system/
+cp /opt/Aria2TelDrive/aria2teldrive.service /etc/systemd/system/
 ```
 
 启用并启动服务：
 
 ```bash
 systemctl daemon-reload
-systemctl enable --now pikpak2teldrive
+systemctl enable --now aria2teldrive
 ```
 
 ### 7. 确认运行状态
 
 ```bash
-systemctl status pikpak2teldrive
+systemctl status aria2teldrive
 ```
 
 看到 `active (running)` 即表示部署成功 ✅
@@ -113,13 +113,13 @@ systemctl status pikpak2teldrive
 
 ```bash
 # 查看实时日志
-journalctl -u pikpak2teldrive -f
+journalctl -u aria2teldrive -f
 
 # 重启服务
-systemctl restart pikpak2teldrive
+systemctl restart aria2teldrive
 
 # 停止服务
-systemctl stop pikpak2teldrive
+systemctl stop aria2teldrive
 ```
 
 ## License

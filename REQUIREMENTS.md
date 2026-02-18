@@ -1,4 +1,4 @@
-# Pikpak2TelDrive 需求文档
+# Aria2TelDrive 需求文档
 
 ## 1. 项目概述
 
@@ -66,7 +66,7 @@
 
 ### 4.3 目录结构
 ```
-Pikpak2TelDrive/
+Aria2TelDrive/
 ├── app/
 │   ├── __init__.py
 │   ├── main.py              # FastAPI 应用入口
