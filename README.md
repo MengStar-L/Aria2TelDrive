@@ -89,24 +89,10 @@ python app/main.py
 
 ### 6. 注册为系统服务（可选）
 
-创建服务文件：
+复制项目中的服务文件：
 
 ```bash
-cat > /etc/systemd/system/pikpak2teldrive.service << 'EOF'
-[Unit]
-Description=Pikpak2TelDrive
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/Pikpak2TelDrive
-ExecStart=/opt/Pikpak2TelDrive/venv/bin/python app/main.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
+cp /opt/Pikpak2TelDrive/pikpak2teldrive.service /etc/systemd/system/
 ```
 
 启用并启动服务：

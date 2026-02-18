@@ -1,0 +1,13 @@
+[Unit]
+Description=Pikpak2TelDrive - aria2 下载 + TelDrive 上传中转服务
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/Pikpak2TelDrive
+ExecStart=/opt/Pikpak2TelDrive/venv/bin/python app/main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
