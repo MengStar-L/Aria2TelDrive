@@ -56,12 +56,11 @@ class TaskManager:
         asyncio.create_task(self._apply_aria2_options())
 
     async def _apply_aria2_options(self):
-        """将本地配置同步到远端 aria2（max-concurrent-downloads, dir）"""
+        """将本地配置同步到远端 aria2"""
         try:
             cfg = self.config
             options = {
                 "max-concurrent-downloads": str(cfg["aria2"].get("max_concurrent", 3)),
-                "dir": get_download_dir(cfg)
             }
             await self.aria2.change_global_option(options)
             logger.info(f"已同步 aria2 全局选项: {options}")
@@ -391,7 +390,7 @@ class TaskManager:
     async def add_task(self, url: str, filename: str = None,
                        teldrive_path: str = "/") -> dict:
         """通过面板手动添加下载+上传任务"""
-        download_dir = get_download_dir(self.config)
+        download_dir = self.config["aria2"].get("download_dir", "./downloads")
         options = {"dir": download_dir}
         if filename:
             options["out"] = filename
@@ -478,7 +477,7 @@ class TaskManager:
             return {"success": False, "message": "无法重试：缺少下载 URL"}
 
         # 重新提交给 aria2
-        download_dir = get_download_dir(self.config)
+        download_dir = self.config["aria2"].get("download_dir", "./downloads")
         options = {"dir": download_dir}
         if task.get("filename"):
             options["out"] = task["filename"]
