@@ -180,6 +180,7 @@ class TaskManager:
         import time
         self._upload_time_snapshot = time.monotonic()
         self._upload_total_snapshot = 0
+        self._last_cleanup_time = 0.0
         while self._running:
             try:
                 # 计算总上传速度
@@ -199,6 +200,12 @@ class TaskManager:
                 await self._check_cpu_usage()
 
                 await self._sync_aria2_tasks()
+
+                # 定期兜底清理已完成任务的残留本地文件（每 60 秒）
+                if now - self._last_cleanup_time >= 60:
+                    self._last_cleanup_time = now
+                    await self._cleanup_completed_files()
+
                 await asyncio.sleep(2)
             except asyncio.CancelledError:
                 break
@@ -681,14 +688,51 @@ class TaskManager:
                 return
             if not local_path or not os.path.exists(local_path):
                 return
-            if os.path.isdir(local_path):
-                shutil.rmtree(local_path, ignore_errors=True)
-                logger.info(f"已删除本地文件夹: {local_path}")
-            else:
-                os.remove(local_path)
-                logger.info(f"已删除本地文件: {local_path}")
+            # 带重试的删除（Windows 可能因句柄延迟释放而失败）
+            for attempt in range(3):
+                try:
+                    if os.path.isdir(local_path):
+                        shutil.rmtree(local_path)
+                        logger.info(f"已删除本地文件夹: {local_path}")
+                    else:
+                        os.remove(local_path)
+                        logger.info(f"已删除本地文件: {local_path}")
+                    return  # 删除成功，直接返回
+                except PermissionError:
+                    if attempt < 2:
+                        logger.warning(f"删除文件被拒绝(句柄占用)，{attempt+1}/3 次重试: {local_path}")
+                        await asyncio.sleep(2)
+                    else:
+                        raise
         except Exception as e:
             logger.warning(f"删除本地文件失败: {local_path}, {e}")
+
+    async def _cleanup_completed_files(self):
+        """定期清理已完成任务的本地残留文件（兜底机制）"""
+        if not self.config["general"].get("auto_delete", True):
+            return
+        try:
+            all_tasks = await db.get_all_tasks()
+            for task in all_tasks:
+                if task["status"] != "completed":
+                    continue
+                local_path = task.get("local_path", "")
+                if not local_path:
+                    continue
+                local_path = self._get_upload_path(local_path)
+                if not local_path or not os.path.exists(local_path):
+                    continue
+                logger.info(f"兜底清理：删除已完成任务的残留文件: {local_path}")
+                try:
+                    if os.path.isdir(local_path):
+                        shutil.rmtree(local_path)
+                    else:
+                        os.remove(local_path)
+                    logger.info(f"兜底清理成功: {local_path}")
+                except Exception as e:
+                    logger.warning(f"兜底清理失败: {local_path}, {e}")
+        except Exception as e:
+            logger.debug(f"清理已完成文件异常: {e}")
 
     # ===========================================
     # 上传
