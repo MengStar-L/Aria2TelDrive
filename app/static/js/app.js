@@ -496,10 +496,12 @@ function bindTaskActions(el, taskId) {
 
 function updateDashboard() {
     const tasks = Object.values(state.tasks);
+    const total = tasks.length;
     const downloading = tasks.filter(t => t.status === 'downloading').length;
     const uploading = tasks.filter(t => t.status === 'uploading').length;
     const completed = tasks.filter(t => t.status === 'completed').length;
 
+    document.getElementById('stat-total').textContent = total;
     document.getElementById('stat-downloading').textContent = downloading;
     document.getElementById('stat-uploading').textContent = uploading;
     document.getElementById('stat-completed').textContent = completed;

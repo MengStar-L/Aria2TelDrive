@@ -30,6 +30,11 @@ class TaskManager:
         self._known_gids: set = set()
         # 正在上传的 GID 集合，避免重复触发上传
         self._uploading_gids: set = set()
+        # 上传速度跟踪：per-task 已上传字节 → monitor loop 汇总算总速度
+        self._task_uploaded_bytes: dict = {}   # task_id -> 当前已上传字节
+        self._upload_total_snapshot: int = 0   # 上次快照时的总字节
+        self._upload_time_snapshot: float = 0.0
+        self._upload_speed: float = 0.0
 
     def _init_clients(self):
         """根据当前配置初始化客户端"""
@@ -133,8 +138,22 @@ class TaskManager:
 
     async def _monitor_loop(self):
         """定期轮询 aria2，同步所有下载任务到数据库和前端"""
+        import time
+        self._upload_time_snapshot = time.monotonic()
+        self._upload_total_snapshot = 0
         while self._running:
             try:
+                # 计算总上传速度
+                now = time.monotonic()
+                elapsed = now - self._upload_time_snapshot
+                if elapsed >= 2.0:
+                    current_total = sum(self._task_uploaded_bytes.values())
+                    self._upload_speed = (current_total - self._upload_total_snapshot) / elapsed
+                    if self._upload_speed < 0:
+                        self._upload_speed = 0.0
+                    self._upload_total_snapshot = current_total
+                    self._upload_time_snapshot = now
+
                 await self._sync_aria2_tasks()
                 await asyncio.sleep(2)
             except asyncio.CancelledError:
@@ -164,7 +183,7 @@ class TaskManager:
                 "type": "global_stat",
                 "data": {
                     "download_speed": int(stat.get("downloadSpeed", 0)),
-                    "upload_speed": int(stat.get("uploadSpeed", 0)),
+                    "upload_speed": int(self._upload_speed),
                     "active": len(active),
                     "waiting": len(waiting),
                     "stopped": len(stopped)
@@ -454,6 +473,9 @@ class TaskManager:
         _last_broadcast = [0.0]
         _last_progress = [0.0]
 
+        # 注册 per-task 字节追踪
+        self._task_uploaded_bytes[task_id] = 0
+
         logger.info(f"任务 {task_id} 检测到文件夹: {dir_path}，"
                     f"共 {len(all_files)} 个文件，总大小 {total_size} bytes，"
                     f"上传到 {base_teldrive_path}")
@@ -478,6 +500,7 @@ class TaskManager:
                 async def progress_callback(uploaded: int, total: int):
                     if total_size > 0:
                         current_total = base_uploaded + uploaded
+                        self._task_uploaded_bytes[task_id] = current_total
                         progress = round(current_total / total_size * 100, 1)
                         now = time.monotonic()
                         if (progress - _last_progress[0] >= 1.0 or
@@ -508,6 +531,7 @@ class TaskManager:
             logger.info(f"任务 {task_id} 文件上传成功: {rel_path}")
 
         # 所有文件上传完成
+        self._task_uploaded_bytes.pop(task_id, None)
         await db.update_task(task_id, status="completed", upload_progress=100.0)
         await self._broadcast_task_update(task_id)
         logger.info(f"任务 {task_id} 文件夹上传完成: {dir_path}，共 {len(all_files)} 个文件")
@@ -518,10 +542,15 @@ class TaskManager:
         _last_broadcast = [0.0]   # 上次广播时间
         _last_progress = [0.0]    # 上次广播的进度值
 
+        # 注册 per-task 字节追踪
+        self._task_uploaded_bytes[task_id] = 0
+
         async def progress_callback(uploaded: int, total: int):
             if total > 0:
+                self._task_uploaded_bytes[task_id] = uploaded
                 progress = round(uploaded / total * 100, 1)
                 now = time.monotonic()
+
                 # 节流：进度变化 ≥ 1% 或距上次超 1 秒才广播
                 if (progress - _last_progress[0] >= 1.0 or
                         now - _last_broadcast[0] >= 1.0 or
@@ -542,6 +571,8 @@ class TaskManager:
             )
         except asyncio.TimeoutError:
             raise Exception(f"上传超时（超过 {upload_timeout}s）")
+
+        self._task_uploaded_bytes.pop(task_id, None)  # 上传完成，移除追踪
 
         if result.get("success"):
             await db.update_task(task_id, status="completed",
