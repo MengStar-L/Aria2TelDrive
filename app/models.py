@@ -44,6 +44,7 @@ class TelDriveSettings(BaseModel):
     channel_id: int = 0
     chunk_size: str = "500M"
     upload_concurrency: int = 4
+    upload_dir: str = ""
     target_path: str = "/"
 
 
