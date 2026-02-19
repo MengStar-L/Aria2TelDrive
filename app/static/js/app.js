@@ -257,12 +257,17 @@ function handleWSMessage(msg) {
                     const diskUsage = document.getElementById('stat-disk-usage');
                     const diskLabel = document.getElementById('stat-disk-label');
                     diskCard.style.display = '';
-                    diskUsage.textContent = `${disk.used_gb} / ${disk.limit_gb} GB`;
                     if (disk.paused) {
+                        diskUsage.textContent = `${disk.used_gb} / ${disk.limit_gb} GB`;
                         diskLabel.textContent = '磁盘已满 · 下载已暂停';
                         diskLabel.style.color = 'var(--error)';
-                    } else {
+                    } else if (disk.limit_gb > 0) {
+                        diskUsage.textContent = `${disk.used_gb} / ${disk.limit_gb} GB`;
                         diskLabel.textContent = `磁盘使用 (剩余 ${disk.free_gb} GB)`;
+                        diskLabel.style.color = '';
+                    } else {
+                        diskUsage.textContent = `${disk.used_gb} / ${disk.total_gb} GB`;
+                        diskLabel.textContent = `磁盘 ${disk.percent}% (剩余 ${disk.free_gb} GB)`;
                         diskLabel.style.color = '';
                     }
                 } else {

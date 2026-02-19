@@ -181,45 +181,48 @@ class TaskManager:
     async def _check_disk_usage(self):
         """检测磁盘使用量，空间不足时暂停 aria2 下载"""
         max_gb = self.config["general"].get("max_disk_usage", 0)
-        if max_gb <= 0:
-            # 未设置限制，如果之前暂停过则恢复
-            if self._disk_paused:
-                await self._resume_aria2_downloads()
-            self._disk_usage_info = {}
-            return
 
+        # 始终采集磁盘信息用于仪表盘显示
         try:
             download_dir = get_download_dir(self.config)
             usage = shutil.disk_usage(download_dir)
             used_gb = round(usage.used / (1024 ** 3), 2)
             total_gb = round(usage.total / (1024 ** 3), 2)
             free_gb = round(usage.free / (1024 ** 3), 2)
+            percent = round(used_gb / total_gb * 100, 1) if total_gb > 0 else 0
 
             self._disk_usage_info = {
                 "used_gb": used_gb,
                 "total_gb": total_gb,
                 "free_gb": free_gb,
+                "percent": percent,
                 "limit_gb": max_gb,
                 "paused": self._disk_paused
             }
-
-            if used_gb >= max_gb and not self._disk_paused:
-                # 超限 → 暂停下载
-                logger.warning(f"磁盘使用 {used_gb}GB >= 限制 {max_gb}GB，暂停 aria2 下载")
-                try:
-                    await self.aria2.change_global_option(
-                        {"max-concurrent-downloads": "0"})
-                    self._disk_paused = True
-                    self._disk_usage_info["paused"] = True
-                except Exception as e:
-                    logger.error(f"暂停 aria2 下载失败: {e}")
-
-            elif used_gb < max_gb * 0.9 and self._disk_paused:
-                # 恢复（留 10% 缓冲避免反复切换）
-                await self._resume_aria2_downloads()
-
         except Exception as e:
             logger.debug(f"检测磁盘使用失败: {e}")
+            return
+
+        # 限流逻辑：仅在设置了上限时生效
+        if max_gb <= 0:
+            if self._disk_paused:
+                await self._resume_aria2_downloads()
+            return
+
+        if used_gb >= max_gb and not self._disk_paused:
+            # 超限 → 暂停下载
+            logger.warning(f"磁盘使用 {used_gb}GB >= 限制 {max_gb}GB，暂停 aria2 下载")
+            try:
+                await self.aria2.change_global_option(
+                    {"max-concurrent-downloads": "0"})
+                self._disk_paused = True
+                self._disk_usage_info["paused"] = True
+            except Exception as e:
+                logger.error(f"暂停 aria2 下载失败: {e}")
+
+        elif used_gb < max_gb * 0.9 and self._disk_paused:
+            # 恢复（留 10% 缓冲避免反复切换）
+            await self._resume_aria2_downloads()
 
     async def _resume_aria2_downloads(self):
         """恢复 aria2 下载并发数（仅在未被 CPU 限流重度时恢复到正常值）"""
