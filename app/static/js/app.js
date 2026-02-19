@@ -270,8 +270,6 @@ function handleWSMessage(msg) {
                         diskLabel.textContent = `磁盘 ${disk.percent}% (剩余 ${disk.free_gb} GB)`;
                         diskLabel.style.color = '';
                     }
-                } else {
-                    document.getElementById('stat-disk-card').style.display = 'none';
                 }
                 // CPU 使用状态
                 if (msg.data.cpu) {
@@ -291,8 +289,6 @@ function handleWSMessage(msg) {
                         cpuLabel.textContent = `CPU (上限 ${cpu.limit}%)`;
                         cpuLabel.style.color = '';
                     }
-                } else {
-                    document.getElementById('stat-cpu-card').style.display = 'none';
                 }
             }
             break;
@@ -544,11 +540,21 @@ function updateDashboard() {
     const downloading = tasks.filter(t => t.status === 'downloading').length;
     const uploading = tasks.filter(t => t.status === 'uploading').length;
     const completed = tasks.filter(t => t.status === 'completed').length;
+    const failed = tasks.filter(t => t.status === 'failed').length;
 
     document.getElementById('stat-total').textContent = total;
     document.getElementById('stat-downloading').textContent = downloading;
     document.getElementById('stat-uploading').textContent = uploading;
     document.getElementById('stat-completed').textContent = completed;
+
+    // 更新过滤按钮上的数量
+    const filterCounts = { all: total, downloading, uploading, completed, failed };
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        const filter = btn.dataset.filter;
+        const count = filterCounts[filter] ?? 0;
+        const labels = { all: '全部', downloading: '下载中', uploading: '上传中', completed: '已完成', failed: '失败' };
+        btn.textContent = `${labels[filter] || filter} (${count})`;
+    });
 }
 
 function escapeHTML(str) {
