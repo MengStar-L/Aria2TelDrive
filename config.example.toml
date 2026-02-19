@@ -20,7 +20,7 @@ target_path = "/"
 [general]
 max_retries = 3
 auto_delete = true
-# 磁盘使用上限(GB)，0 表示不限制。超限时暂停下载，空间释放后自动恢复
+# 磁盘使用上限(GB)，0 表示不限制。达到 90% 时限制下载并发，降至 60% 后逐步恢复
 max_disk_usage = 0
 # CPU 使用率上限(%)，超过时自动降低并发。0 表示不限制
 cpu_limit = 85

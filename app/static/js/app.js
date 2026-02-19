@@ -257,10 +257,10 @@ function handleWSMessage(msg) {
                     const diskUsage = document.getElementById('stat-disk-usage');
                     const diskLabel = document.getElementById('stat-disk-label');
                     diskCard.style.display = '';
-                    if (disk.paused) {
+                    if (disk.throttled >= 1) {
                         diskUsage.textContent = `${disk.used_gb} / ${disk.limit_gb} GB`;
-                        diskLabel.textContent = '磁盘已满 · 下载已暂停';
-                        diskLabel.style.color = 'var(--error)';
+                        diskLabel.textContent = `磁盘限流中 · 并发 ${disk.current_concurrent}/${disk.max_concurrent}`;
+                        diskLabel.style.color = '#fb923c';
                     } else if (disk.limit_gb > 0) {
                         diskUsage.textContent = `${disk.used_gb} / ${disk.limit_gb} GB`;
                         diskLabel.textContent = `磁盘使用 (剩余 ${disk.free_gb} GB)`;

@@ -405,7 +405,8 @@
                             <div class="form-group">
                                 <label for="gen-max-disk-usage">磁盘使用上限 (GB)</label>
                                 <input type="number" id="gen-max-disk-usage" placeholder="0 表示不限制" min="0" step="1">
-                                <small style="color:rgba(255,255,255,0.4);font-size:11px">空间不足时暂停下载，上传释放空间后自动恢复。0 =
+                                <small style="color:rgba(255,255,255,0.4);font-size:11px">达到 90% 时限制下载并发，空间降至 60%
+                                    后逐步恢复。0 =
                                     不限制</small>
                             </div>
                             <div class="form-group">
