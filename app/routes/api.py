@@ -89,3 +89,20 @@ async def clear_completed_tasks():
             await task_manager.delete_task(t["task_id"])
             count += 1
     return {"success": True, "message": f"已清除 {count} 个任务"}
+
+
+@router.post("/tasks/clear-all")
+async def clear_all_tasks():
+    """清除所有任务"""
+    tasks = await task_manager.get_all_tasks()
+    count = 0
+    for t in tasks:
+        # 先取消进行中的任务
+        if t["status"] in ("downloading", "uploading", "pending", "paused"):
+            try:
+                await task_manager.cancel_task(t["task_id"])
+            except Exception:
+                pass
+        await task_manager.delete_task(t["task_id"])
+        count += 1
+    return {"success": True, "message": f"已清除全部 {count} 个任务"}

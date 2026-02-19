@@ -31,7 +31,7 @@ class TelDriveClient:
     # 默认超时（普通 API 请求）
     DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=120, connect=30, sock_read=60)
     # 上传超时（单个 chunk 可能很大，给足时间）
-    UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=600, connect=30, sock_read=300)
+    UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=600, connect=30, sock_read=120)
 
     def __init__(self, api_host: str = "http://localhost:8080",
                  access_token: str = "", channel_id: int = 0,
@@ -276,6 +276,8 @@ class TelDriveClient:
                     else:
                         text = await resp.text()
                         raise Exception(f"HTTP {resp.status}: {text}")
+            except asyncio.CancelledError:
+                raise  # 被取消时立即退出，不重试
             except Exception as e:
                 retry_count += 1
                 if retry_count > self.max_retries:

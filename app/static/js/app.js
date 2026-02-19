@@ -250,6 +250,24 @@ function handleWSMessage(msg) {
                 document.getElementById('stat-speed').textContent = dlSpeed;
                 const ulSpeed = formatSpeed(msg.data.upload_speed || 0);
                 document.getElementById('stat-upload-speed').textContent = ulSpeed;
+                // 磁盘使用状态
+                if (msg.data.disk) {
+                    const disk = msg.data.disk;
+                    const diskCard = document.getElementById('stat-disk-card');
+                    const diskUsage = document.getElementById('stat-disk-usage');
+                    const diskLabel = document.getElementById('stat-disk-label');
+                    diskCard.style.display = '';
+                    diskUsage.textContent = `${disk.used_gb} / ${disk.limit_gb} GB`;
+                    if (disk.paused) {
+                        diskLabel.textContent = '磁盘已满 · 下载已暂停';
+                        diskLabel.style.color = 'var(--error)';
+                    } else {
+                        diskLabel.textContent = `磁盘使用 (剩余 ${disk.free_gb} GB)`;
+                        diskLabel.style.color = '';
+                    }
+                } else {
+                    document.getElementById('stat-disk-card').style.display = 'none';
+                }
             }
             break;
 
@@ -560,6 +578,7 @@ async function loadAndFillSettings() {
         // General
         document.getElementById('gen-max-retries').value = settings.general?.max_retries || 3;
         document.getElementById('gen-auto-delete').checked = settings.general?.auto_delete !== false;
+        document.getElementById('gen-max-disk-usage').value = settings.general?.max_disk_usage || 0;
     } catch (e) {
         showToast('加载设置失败: ' + e.message, 'error');
     }
@@ -585,7 +604,8 @@ function collectSettings() {
         },
         general: {
             max_retries: parseInt(document.getElementById('gen-max-retries').value) || 3,
-            auto_delete: document.getElementById('gen-auto-delete').checked
+            auto_delete: document.getElementById('gen-auto-delete').checked,
+            max_disk_usage: parseInt(document.getElementById('gen-max-disk-usage').value) || 0
         }
     };
 }
@@ -644,6 +664,23 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!confirm(`确认清除 ${completedCount} 个已完成/已取消的任务？`)) return;
         try {
             const result = await apiCall('/api/tasks/clear-completed', { method: 'POST' });
+            showToast(result.message, 'success');
+            fetchAllTasks();
+        } catch (e) {
+            showToast('清除失败: ' + e.message, 'error');
+        }
+    });
+
+    // 清除所有任务
+    document.getElementById('btn-clear-all').addEventListener('click', async () => {
+        const totalCount = Object.keys(state.tasks).length;
+        if (totalCount === 0) {
+            showToast('没有任务', 'info');
+            return;
+        }
+        if (!confirm(`⚠ 确认清除全部 ${totalCount} 个任务？进行中的任务也会被取消！`)) return;
+        try {
+            const result = await apiCall('/api/tasks/clear-all', { method: 'POST' });
             showToast(result.message, 'success');
             fetchAllTasks();
         } catch (e) {

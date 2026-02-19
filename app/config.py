@@ -34,7 +34,8 @@ DEFAULT_CONFIG = {
     },
     "general": {
         "max_retries": 3,
-        "auto_delete": True
+        "auto_delete": True,
+        "max_disk_usage": 0
     }
 }
 

@@ -30,11 +30,16 @@ class TaskManager:
         self._known_gids: set = set()
         # 正在上传的 GID 集合，避免重复触发上传
         self._uploading_gids: set = set()
+        # 上传协程追踪：task_id -> asyncio.Task，重试时可取消旧任务
+        self._upload_tasks: dict = {}
         # 上传速度跟踪：per-task 已上传字节 → monitor loop 汇总算总速度
         self._task_uploaded_bytes: dict = {}   # task_id -> 当前已上传字节
         self._upload_total_snapshot: int = 0   # 上次快照时的总字节
         self._upload_time_snapshot: float = 0.0
         self._upload_speed: float = 0.0
+        # 磁盘空间限制：空间不足时暂停 aria2 下载
+        self._disk_paused: bool = False
+        self._disk_usage_info: dict = {}  # 缓存磁盘使用信息
 
     def _init_clients(self):
         """根据当前配置初始化客户端"""
@@ -93,7 +98,8 @@ class TaskManager:
                 local_path = t.get("local_path", "")
                 if local_path and os.path.exists(local_path):
                     logger.info(f"恢复僵死的上传任务: {task_id} ({t.get('filename', '?')})")
-                    asyncio.create_task(self._retry_upload(task_id))
+                    upload_t = asyncio.create_task(self._retry_upload(task_id))
+                    self._upload_tasks[task_id] = upload_t
                 else:
                     logger.warning(f"僵死上传任务 {task_id} 本地文件不存在，标记失败")
                     await db.update_task(task_id, status="failed",
@@ -154,6 +160,9 @@ class TaskManager:
                     self._upload_total_snapshot = current_total
                     self._upload_time_snapshot = now
 
+                # 检测磁盘空间
+                await self._check_disk_usage()
+
                 await self._sync_aria2_tasks()
                 await asyncio.sleep(2)
             except asyncio.CancelledError:
@@ -161,6 +170,61 @@ class TaskManager:
             except Exception as e:
                 logger.error(f"监控循环异常: {e}")
                 await asyncio.sleep(5)
+
+    async def _check_disk_usage(self):
+        """检测磁盘使用量，空间不足时暂停 aria2 下载"""
+        max_gb = self.config["general"].get("max_disk_usage", 0)
+        if max_gb <= 0:
+            # 未设置限制，如果之前暂停过则恢复
+            if self._disk_paused:
+                await self._resume_aria2_downloads()
+            self._disk_usage_info = {}
+            return
+
+        try:
+            download_dir = get_download_dir(self.config)
+            usage = shutil.disk_usage(download_dir)
+            used_gb = round(usage.used / (1024 ** 3), 2)
+            total_gb = round(usage.total / (1024 ** 3), 2)
+            free_gb = round(usage.free / (1024 ** 3), 2)
+
+            self._disk_usage_info = {
+                "used_gb": used_gb,
+                "total_gb": total_gb,
+                "free_gb": free_gb,
+                "limit_gb": max_gb,
+                "paused": self._disk_paused
+            }
+
+            if used_gb >= max_gb and not self._disk_paused:
+                # 超限 → 暂停下载
+                logger.warning(f"磁盘使用 {used_gb}GB >= 限制 {max_gb}GB，暂停 aria2 下载")
+                try:
+                    await self.aria2.change_global_option(
+                        {"max-concurrent-downloads": "0"})
+                    self._disk_paused = True
+                    self._disk_usage_info["paused"] = True
+                except Exception as e:
+                    logger.error(f"暂停 aria2 下载失败: {e}")
+
+            elif used_gb < max_gb * 0.9 and self._disk_paused:
+                # 恢复（留 10% 缓冲避免反复切换）
+                await self._resume_aria2_downloads()
+
+        except Exception as e:
+            logger.debug(f"检测磁盘使用失败: {e}")
+
+    async def _resume_aria2_downloads(self):
+        """恢复 aria2 下载并发数"""
+        max_concurrent = str(self.config["aria2"].get("max_concurrent", 3))
+        try:
+            await self.aria2.change_global_option(
+                {"max-concurrent-downloads": max_concurrent})
+            self._disk_paused = False
+            self._disk_usage_info["paused"] = False
+            logger.info(f"磁盘空间已恢复，恢复 aria2 并发数为 {max_concurrent}")
+        except Exception as e:
+            logger.error(f"恢复 aria2 下载失败: {e}")
 
     async def _sync_aria2_tasks(self):
         """从 aria2 获取所有任务，同步到本地数据库"""
@@ -179,15 +243,19 @@ class TaskManager:
         # 广播全局统计
         try:
             stat = await self.aria2.get_global_stat()
+            broadcast_data = {
+                "download_speed": int(stat.get("downloadSpeed", 0)),
+                "upload_speed": int(self._upload_speed),
+                "active": len(active),
+                "waiting": len(waiting),
+                "stopped": len(stopped)
+            }
+            # 附加磁盘使用信息
+            if self._disk_usage_info:
+                broadcast_data["disk"] = self._disk_usage_info
             await self.broadcast({
                 "type": "global_stat",
-                "data": {
-                    "download_speed": int(stat.get("downloadSpeed", 0)),
-                    "upload_speed": int(self._upload_speed),
-                    "active": len(active),
-                    "waiting": len(waiting),
-                    "stopped": len(stopped)
-                }
+                "data": broadcast_data
             })
         except Exception:
             pass
@@ -264,7 +332,8 @@ class TaskManager:
                     if aria2_status == "complete":
                         local_path = parsed["file_path"]
                         if local_path:
-                            asyncio.create_task(self._handle_download_complete(task_id, gid))
+                            t = asyncio.create_task(self._handle_download_complete(task_id, gid))
+                            self._upload_tasks[task_id] = t
                         else:
                             await db.update_task(task_id, status="completed")
                             await self._broadcast_task_update(task_id)
@@ -321,7 +390,8 @@ class TaskManager:
             if aria2_status == "complete" and current_status != "uploading":
                 local_path = parsed["file_path"]
                 if local_path:
-                    asyncio.create_task(self._handle_download_complete(task_id, gid))
+                    t = asyncio.create_task(self._handle_download_complete(task_id, gid))
+                    self._upload_tasks[task_id] = t
                 else:
                     await db.update_task(task_id, status="completed")
                     await self._broadcast_task_update(task_id)
@@ -436,12 +506,16 @@ class TaskManager:
                         os.remove(local_path)
                         logger.info(f"已删除本地文件: {local_path}")
 
+        except asyncio.CancelledError:
+            logger.info(f"任务 {task_id} 上传被取消（用户重试或取消）")
+            # 不标记 failed，让重试逻辑接管
         except Exception as e:
             logger.error(f"任务 {task_id} 上传失败: {e}")
             await db.update_task(task_id, status="failed", error=str(e))
             await self._broadcast_task_update(task_id)
         finally:
             self._uploading_gids.discard(gid)
+            self._upload_tasks.pop(task_id, None)
 
     # ===========================================
     # 上传
@@ -480,7 +554,7 @@ class TaskManager:
                     f"共 {len(all_files)} 个文件，总大小 {total_size} bytes，"
                     f"上传到 {base_teldrive_path}")
 
-        upload_timeout_per_file = self.config["general"].get("max_retries", 3) * 600
+        upload_timeout_per_file = self.config["general"].get("max_retries", 3) * 300
 
         for idx, (full_path, rel_path, file_size) in enumerate(all_files, 1):
             # 计算该文件在 TelDrive 上的目标路径
@@ -560,8 +634,8 @@ class TaskManager:
                     await db.update_task(task_id, upload_progress=progress)
                     await self._broadcast_task_update(task_id)
 
-        # 整体超时保护：防止上传无限挂起 (30 分钟)
-        upload_timeout = self.config["general"].get("max_retries", 3) * 600
+        # 整体超时保护：防止上传无限挂起 (15 分钟)
+        upload_timeout = self.config["general"].get("max_retries", 3) * 300
         try:
             result = await asyncio.wait_for(
                 self.teldrive.upload_file_chunked(
@@ -681,6 +755,17 @@ class TaskManager:
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    def _cancel_existing_upload(self, task_id: str):
+        """取消正在进行的上传任务（如果有）"""
+        existing_task = self._upload_tasks.pop(task_id, None)
+        if existing_task and not existing_task.done():
+            existing_task.cancel()
+            logger.info(f"已取消任务 {task_id} 的旧上传协程")
+
+        # 清理 _uploading_gids 中对应的 GID，解除去重锁定
+        # task_id 本身可能就是 GID（直接用 GID 做 task_id 的情况）
+        self._uploading_gids.discard(task_id)
+
     async def retry_task(self, task_id: str) -> dict:
         """重试失败/卡住的任务"""
         task = await db.get_task(task_id)
@@ -689,16 +774,25 @@ class TaskManager:
         if task["status"] not in ("failed", "uploading"):
             return {"success": False, "message": "只能重试失败或上传中的任务"}
 
+        # 取消正在卡住的旧上传协程，清理 GID 去重标记
+        self._cancel_existing_upload(task_id)
+        # 也清理 aria2_gid 对应的 uploading_gids 标记
+        gid = task.get("aria2_gid", "")
+        if gid:
+            self._uploading_gids.discard(gid)
+
         # 如果本地文件/文件夹已存在，直接重试上传
         local_path = task.get("local_path", "")
         mapped_path = self._map_upload_path(local_path) if local_path else ""
 
         # 检查原始路径或映射路径是否存在
         if mapped_path and os.path.exists(mapped_path):
-            asyncio.create_task(self._retry_upload(task_id))
+            t = asyncio.create_task(self._retry_upload(task_id))
+            self._upload_tasks[task_id] = t
             return {"success": True, "message": "正在重试上传"}
         if local_path and os.path.exists(local_path):
-            asyncio.create_task(self._retry_upload(task_id))
+            t = asyncio.create_task(self._retry_upload(task_id))
+            self._upload_tasks[task_id] = t
             return {"success": True, "message": "正在重试上传"}
 
         # 否则需要重新下载
@@ -772,10 +866,14 @@ class TaskManager:
                         os.remove(local_path)
                         logger.info(f"已删除本地文件: {local_path}")
 
+        except asyncio.CancelledError:
+            logger.info(f"任务 {task_id} 重试上传被取消")
         except Exception as e:
             logger.error(f"任务 {task_id} 重试上传失败: {e}")
             await db.update_task(task_id, status="failed", error=str(e))
             await self._broadcast_task_update(task_id)
+        finally:
+            self._upload_tasks.pop(task_id, None)
 
     async def delete_task(self, task_id: str) -> dict:
         """删除任务记录"""
