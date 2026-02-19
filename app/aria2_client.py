@@ -16,6 +16,20 @@ class Aria2Client:
         self.rpc_url = f"{rpc_url}:{rpc_port}/jsonrpc"
         self.secret = rpc_secret
         self._id_counter = 0
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._timeout = aiohttp.ClientTimeout(total=10, connect=5)
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """获取或创建复用的 HTTP 会话"""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=self._timeout)
+        return self._session
+
+    async def close(self):
+        """关闭 HTTP 会话"""
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
 
     def _build_params(self, *args):
         """构建带 secret 的参数列表"""
@@ -32,15 +46,16 @@ class Aria2Client:
             "method": method,
             "params": self._build_params(*args)
         }
-        timeout = aiohttp.ClientTimeout(total=10, connect=5)
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(self.rpc_url, json=payload) as resp:
-                    result = await resp.json()
-                    if "error" in result:
-                        raise Exception(f"aria2 RPC error: {result['error']}")
-                    return result.get("result")
+            session = await self._get_session()
+            async with session.post(self.rpc_url, json=payload) as resp:
+                result = await resp.json()
+                if "error" in result:
+                    raise Exception(f"aria2 RPC error: {result['error']}")
+                return result.get("result")
         except aiohttp.ClientError as e:
+            # 连接失败时关闭旧会话，下次重建
+            await self.close()
             raise ConnectionError(f"无法连接到 aria2 RPC: {e}")
 
     async def get_version(self) -> dict:

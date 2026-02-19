@@ -151,6 +151,9 @@ class TaskManager:
                 await self._monitor_task
             except asyncio.CancelledError:
                 pass
+        # 关闭 aria2 HTTP 会话
+        if self.aria2:
+            await self.aria2.close()
         logger.info("任务管理器已停止")
 
     def register_ws(self, ws):
@@ -166,7 +169,7 @@ class TaskManager:
         dead = set()
         for ws in self._ws_clients:
             try:
-                await ws.send_json(message)
+                await asyncio.wait_for(ws.send_json(message), timeout=3)
             except Exception:
                 dead.add(ws)
         self._ws_clients -= dead
@@ -194,17 +197,29 @@ class TaskManager:
                     self._upload_total_snapshot = current_total
                     self._upload_time_snapshot = now
 
-                # 检测磁盘空间
-                await self._check_disk_usage()
-                # 检测 CPU 使用率
-                await self._check_cpu_usage()
+                # 每个步骤独立保护，单步失败不影响其他
+                try:
+                    await self._check_disk_usage()
+                except Exception as e:
+                    logger.debug(f"磁盘检测异常: {e}")
 
-                await self._sync_aria2_tasks()
+                try:
+                    await self._check_cpu_usage()
+                except Exception as e:
+                    logger.debug(f"CPU 检测异常: {e}")
+
+                try:
+                    await self._sync_aria2_tasks()
+                except Exception as e:
+                    logger.debug(f"任务同步异常: {e}")
 
                 # 定期兜底清理已完成任务的残留本地文件（每 60 秒）
                 if now - self._last_cleanup_time >= 60:
                     self._last_cleanup_time = now
-                    await self._cleanup_completed_files()
+                    try:
+                        await self._cleanup_completed_files()
+                    except Exception as e:
+                        logger.debug(f"清理异常: {e}")
 
                 await asyncio.sleep(2)
             except asyncio.CancelledError:
@@ -300,17 +315,17 @@ class TaskManager:
                 logger.error(f"磁盘限流恢复并发数失败: {e}")
 
     def _get_effective_concurrent(self) -> int:
-        """综合磁盘和 CPU 两种限流，取最小并发数"""
+        """综合磁盘和 CPU 两种限流，取最小并发数，绝不超过用户设定值"""
         max_c = self.config["aria2"].get("max_concurrent", 3)
         # CPU 限流
-        cpu_limit = max(1, max_c - self._cpu_reduced_count)
+        cpu_limit = max_c - self._cpu_reduced_count
         # 磁盘限流
         if self._disk_throttled and self._disk_limited_concurrent > 0:
             disk_limit = self._disk_limited_concurrent
         else:
             disk_limit = max_c
-        # 取两者最小值，至少保留 1
-        return max(1, min(cpu_limit, disk_limit))
+        # 取两者最小值，硬上限为 max_c，至少保留 1
+        return max(1, min(cpu_limit, disk_limit, max_c))
 
     async def _apply_concurrent(self):
         """统一设置 aria2 并发数，确保磁盘和 CPU 限流不冲突"""
