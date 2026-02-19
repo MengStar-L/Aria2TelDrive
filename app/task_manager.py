@@ -405,8 +405,8 @@ class TaskManager:
         try:
             # 获取 aria2 全部任务
             active = await self.aria2.tell_active() or []
-            waiting = await self.aria2.tell_waiting(0, 100) or []
-            stopped = await self.aria2.tell_stopped(0, 100) or []
+            waiting = await self.aria2.tell_waiting(0, 1000) or []
+            stopped = await self.aria2.tell_stopped(0, 1000) or []
         except Exception as e:
             # aria2 连接失败时静默跳过（仅每 30 秒打一次日志）
             logger.debug(f"aria2 轮询失败: {e}")
