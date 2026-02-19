@@ -125,13 +125,41 @@ class Aria2Client:
         if total_length > 0:
             progress = round(completed_length / total_length * 100, 1)
 
-        # 获取文件名
+        # 获取文件名和路径
         filename = None
+        file_path = ""
+        is_dir = False
+        dir_path = ""
         files = status.get("files", [])
+
         if files:
             path = files[0].get("path", "")
             if path:
                 filename = path.replace("\\", "/").split("/")[-1]
+            file_path = path
+
+        # 检测 BT 多文件下载：有 bittorrent 字段且含多个文件
+        bt_info = status.get("bittorrent", {})
+        if bt_info and len(files) > 1:
+            # 收集所有有效文件路径
+            all_paths = [f.get("path", "") for f in files if f.get("path")]
+            if len(all_paths) > 1:
+                # 计算公共父目录
+                import os
+                common = os.path.commonpath(all_paths)
+                if common and os.path.dirname(all_paths[0]) != common or any(
+                    os.path.dirname(p) != common for p in all_paths
+                ):
+                    # common 是公共父目录（文件夹）
+                    is_dir = True
+                    dir_path = common
+                    file_path = common  # 用文件夹路径作为主路径
+                    # 文件名用 BT 任务名或文件夹名
+                    bt_name = bt_info.get("info", {}).get("name", "")
+                    if bt_name:
+                        filename = bt_name
+                    else:
+                        filename = os.path.basename(common)
 
         return {
             "status": status.get("status", "unknown"),
@@ -142,7 +170,9 @@ class Aria2Client:
             "speed_str": _format_speed(download_speed),
             "file_size": _format_size(total_length),
             "filename": filename,
-            "file_path": files[0].get("path", "") if files else "",
+            "file_path": file_path,
+            "is_dir": is_dir,
+            "dir_path": dir_path,
             "gid": status.get("gid", "")
         }
 

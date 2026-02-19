@@ -3,6 +3,7 @@
 import asyncio
 import uuid
 import os
+import shutil
 import logging
 from typing import Optional, Set
 from pathlib import Path
@@ -293,6 +294,25 @@ class TaskManager:
                     await db.update_task(task_id, status="completed")
                     await self._broadcast_task_update(task_id)
 
+    def _map_upload_path(self, local_path: str) -> str:
+        """如果配置了 upload_dir，将 aria2 下载路径映射到本地上传路径"""
+        upload_dir = self.config["teldrive"].get("upload_dir", "")
+        if not upload_dir:
+            return local_path
+
+        download_dir = get_download_dir(self.config)
+        norm_local = os.path.normpath(local_path)
+        norm_dl = os.path.normpath(download_dir)
+        if norm_local.startswith(norm_dl):
+            rel = os.path.relpath(norm_local, norm_dl)
+            mapped = os.path.join(upload_dir, rel)
+            logger.info(f"路径映射: {local_path} -> {mapped}")
+            return mapped
+        else:
+            mapped = os.path.join(upload_dir, os.path.basename(local_path))
+            logger.info(f"路径映射(basename): {local_path} -> {mapped}")
+            return mapped
+
     async def _handle_download_complete(self, task_id: str, gid: str):
         """下载完成后自动上传到 TelDrive"""
         if gid in self._uploading_gids:
@@ -305,26 +325,10 @@ class TaskManager:
                 logger.warning(f"任务 {task_id} 无本地文件路径，跳过上传")
                 return
 
-            local_path = task["local_path"]
+            local_path = self._map_upload_path(task["local_path"])
             teldrive_path = task.get("teldrive_path", "/")
 
-            # 如果配置了 upload_dir，将 aria2 下载路径映射到本地上传路径
-            upload_dir = self.config["teldrive"].get("upload_dir", "")
-            if upload_dir:
-                download_dir = get_download_dir(self.config)
-                # 将下载目录前缀替换为 upload_dir
-                norm_local = os.path.normpath(local_path)
-                norm_dl = os.path.normpath(download_dir)
-                if norm_local.startswith(norm_dl):
-                    rel = os.path.relpath(norm_local, norm_dl)
-                    local_path = os.path.join(upload_dir, rel)
-                    logger.info(f"路径映射: {task['local_path']} -> {local_path}")
-                else:
-                    # local_path 不在 download_dir 下，直接用 upload_dir + 文件名
-                    local_path = os.path.join(upload_dir, os.path.basename(local_path))
-                    logger.info(f"路径映射(basename): {task['local_path']} -> {local_path}")
-
-            # 检查文件是否存在
+            # 检查文件/文件夹是否存在
             if not os.path.exists(local_path):
                 error_msg = f"文件不存在: {local_path}"
                 logger.error(f"任务 {task_id} 上传失败: {error_msg}")
@@ -336,15 +340,22 @@ class TaskManager:
                                  download_progress=100.0, download_speed="")
             await self._broadcast_task_update(task_id)
 
-            # 上传
-            await self._upload(task_id, local_path, teldrive_path)
+            # 判断是文件夹还是单文件
+            if os.path.isdir(local_path):
+                await self._upload_directory(task_id, local_path, teldrive_path)
+            else:
+                await self._upload(task_id, local_path, teldrive_path)
 
-            # 清理本地文件
+            # 清理本地文件/文件夹
             task = await db.get_task(task_id)
             if task and task["status"] == "completed" and self.config["general"]["auto_delete"]:
                 if local_path and os.path.exists(local_path):
-                    os.remove(local_path)
-                    logger.info(f"已删除本地文件: {local_path}")
+                    if os.path.isdir(local_path):
+                        shutil.rmtree(local_path, ignore_errors=True)
+                        logger.info(f"已删除本地文件夹: {local_path}")
+                    else:
+                        os.remove(local_path)
+                        logger.info(f"已删除本地文件: {local_path}")
 
         except Exception as e:
             logger.error(f"任务 {task_id} 上传失败: {e}")
@@ -357,8 +368,92 @@ class TaskManager:
     # 上传
     # ===========================================
 
+    async def _upload_directory(self, task_id: str, dir_path: str, teldrive_path: str = "/"):
+        """递归上传文件夹到 TelDrive，保留目录结构"""
+        import time
+
+        # 收集所有文件及其大小
+        dir_name = os.path.basename(dir_path)
+        base_teldrive_path = teldrive_path.rstrip("/") + "/" + dir_name
+        all_files = []
+        for root, _dirs, filenames in os.walk(dir_path):
+            for fname in filenames:
+                full_path = os.path.join(root, fname)
+                rel_path = os.path.relpath(full_path, dir_path)
+                file_size = os.path.getsize(full_path)
+                all_files.append((full_path, rel_path, file_size))
+
+        if not all_files:
+            logger.warning(f"任务 {task_id} 文件夹为空: {dir_path}")
+            await db.update_task(task_id, status="completed", upload_progress=100.0)
+            await self._broadcast_task_update(task_id)
+            return
+
+        total_size = sum(s for _, _, s in all_files)
+        uploaded_total = [0]  # 已上传的总字节数
+        _last_broadcast = [0.0]
+        _last_progress = [0.0]
+
+        logger.info(f"任务 {task_id} 检测到文件夹: {dir_path}，"
+                    f"共 {len(all_files)} 个文件，总大小 {total_size} bytes，"
+                    f"上传到 {base_teldrive_path}")
+
+        upload_timeout_per_file = self.config["general"].get("max_retries", 3) * 600
+
+        for idx, (full_path, rel_path, file_size) in enumerate(all_files, 1):
+            # 计算该文件在 TelDrive 上的目标路径
+            rel_dir = os.path.dirname(rel_path).replace("\\", "/")
+            if rel_dir:
+                file_teldrive_path = base_teldrive_path + "/" + rel_dir
+            else:
+                file_teldrive_path = base_teldrive_path
+
+            logger.info(f"任务 {task_id} 上传文件 [{idx}/{len(all_files)}]: "
+                        f"{rel_path} -> {file_teldrive_path}")
+
+            # 为每个文件创建进度回调（汇总到整体进度）
+            file_uploaded_before = uploaded_total[0]
+
+            async def make_progress_cb(base_uploaded):
+                async def progress_callback(uploaded: int, total: int):
+                    if total_size > 0:
+                        current_total = base_uploaded + uploaded
+                        progress = round(current_total / total_size * 100, 1)
+                        now = time.monotonic()
+                        if (progress - _last_progress[0] >= 1.0 or
+                                now - _last_broadcast[0] >= 1.0 or
+                                progress >= 100.0):
+                            _last_progress[0] = progress
+                            _last_broadcast[0] = now
+                            await db.update_task(task_id, upload_progress=progress)
+                            await self._broadcast_task_update(task_id)
+                return progress_callback
+
+            cb = await make_progress_cb(file_uploaded_before)
+
+            try:
+                result = await asyncio.wait_for(
+                    self.teldrive.upload_file_chunked(
+                        full_path, file_teldrive_path, cb
+                    ),
+                    timeout=upload_timeout_per_file
+                )
+            except asyncio.TimeoutError:
+                raise Exception(f"上传超时: {rel_path}（超过 {upload_timeout_per_file}s）")
+
+            if not result.get("success"):
+                raise Exception(f"上传失败: {rel_path} - {result.get('error', '未知错误')}")
+
+            uploaded_total[0] += file_size
+            logger.info(f"任务 {task_id} 文件上传成功: {rel_path}")
+
+        # 所有文件上传完成
+        await db.update_task(task_id, status="completed", upload_progress=100.0)
+        await self._broadcast_task_update(task_id)
+        logger.info(f"任务 {task_id} 文件夹上传完成: {dir_path}，共 {len(all_files)} 个文件")
+
     async def _upload(self, task_id: str, local_path: str, teldrive_path: str = "/"):
-        """上传文件到 TelDrive"""
+        """上传单个文件到 TelDrive"""
         import time
         _last_broadcast = [0.0]   # 上次广播时间
         _last_progress = [0.0]    # 上次广播的进度值
@@ -479,9 +574,16 @@ class TaskManager:
                     await self.aria2.force_remove(task["aria2_gid"])
                 except Exception:
                     pass
-            # 删除本地文件
-            if task.get("local_path") and os.path.exists(task["local_path"]):
-                os.remove(task["local_path"])
+            # 删除本地文件/文件夹
+            local = task.get("local_path", "")
+            if local:
+                mapped = self._map_upload_path(local)
+                for p in (local, mapped):
+                    if p and os.path.exists(p):
+                        if os.path.isdir(p):
+                            shutil.rmtree(p, ignore_errors=True)
+                        else:
+                            os.remove(p)
             await db.update_task(task_id, status="cancelled")
             await self._broadcast_task_update(task_id)
             return {"success": True, "message": "已取消"}
@@ -496,23 +598,15 @@ class TaskManager:
         if task["status"] not in ("failed", "uploading"):
             return {"success": False, "message": "只能重试失败或上传中的任务"}
 
-        # 如果本地文件已存在且下载完成，直接重试上传
+        # 如果本地文件/文件夹已存在，直接重试上传
         local_path = task.get("local_path", "")
-        upload_dir = self.config["teldrive"].get("upload_dir", "")
-        if upload_dir and local_path:
-            download_dir = get_download_dir(self.config)
-            norm_local = os.path.normpath(local_path)
-            norm_dl = os.path.normpath(download_dir)
-            if norm_local.startswith(norm_dl):
-                rel = os.path.relpath(norm_local, norm_dl)
-                mapped_path = os.path.join(upload_dir, rel)
-            else:
-                mapped_path = os.path.join(upload_dir, os.path.basename(local_path))
-            if os.path.exists(mapped_path):
-                local_path = mapped_path
+        mapped_path = self._map_upload_path(local_path) if local_path else ""
 
+        # 检查原始路径或映射路径是否存在
+        if mapped_path and os.path.exists(mapped_path):
+            asyncio.create_task(self._retry_upload(task_id))
+            return {"success": True, "message": "正在重试上传"}
         if local_path and os.path.exists(local_path):
-            # 文件已存在，直接重试上传
             asyncio.create_task(self._retry_upload(task_id))
             return {"success": True, "message": "正在重试上传"}
 
@@ -551,20 +645,8 @@ class TaskManager:
             if not task:
                 return
 
-            local_path = task.get("local_path", "")
+            local_path = self._map_upload_path(task.get("local_path", ""))
             teldrive_path = task.get("teldrive_path", "/")
-
-            # 如果配置了 upload_dir，映射路径
-            upload_dir = self.config["teldrive"].get("upload_dir", "")
-            if upload_dir and local_path:
-                download_dir = get_download_dir(self.config)
-                norm_local = os.path.normpath(local_path)
-                norm_dl = os.path.normpath(download_dir)
-                if norm_local.startswith(norm_dl):
-                    rel = os.path.relpath(norm_local, norm_dl)
-                    local_path = os.path.join(upload_dir, rel)
-                else:
-                    local_path = os.path.join(upload_dir, os.path.basename(local_path))
 
             if not local_path or not os.path.exists(local_path):
                 await db.update_task(task_id, status="failed",
@@ -577,14 +659,22 @@ class TaskManager:
                                  upload_progress=0.0, error=None)
             await self._broadcast_task_update(task_id)
 
-            await self._upload(task_id, local_path, teldrive_path)
+            # 判断是文件夹还是单文件
+            if os.path.isdir(local_path):
+                await self._upload_directory(task_id, local_path, teldrive_path)
+            else:
+                await self._upload(task_id, local_path, teldrive_path)
 
-            # 清理本地文件
+            # 清理本地文件/文件夹
             task = await db.get_task(task_id)
             if task and task["status"] == "completed" and self.config["general"]["auto_delete"]:
                 if local_path and os.path.exists(local_path):
-                    os.remove(local_path)
-                    logger.info(f"已删除本地文件: {local_path}")
+                    if os.path.isdir(local_path):
+                        shutil.rmtree(local_path, ignore_errors=True)
+                        logger.info(f"已删除本地文件夹: {local_path}")
+                    else:
+                        os.remove(local_path)
+                        logger.info(f"已删除本地文件: {local_path}")
 
         except Exception as e:
             logger.error(f"任务 {task_id} 重试上传失败: {e}")
