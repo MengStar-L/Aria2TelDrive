@@ -32,8 +32,9 @@ class Aria2Client:
             "method": method,
             "params": self._build_params(*args)
         }
+        timeout = aiohttp.ClientTimeout(total=10, connect=5)
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(self.rpc_url, json=payload) as resp:
                     result = await resp.json()
                     if "error" in result:
@@ -62,6 +63,14 @@ class Aria2Client:
     async def unpause(self, gid: str) -> str:
         """恢复下载"""
         return await self._call("aria2.unpause", gid)
+
+    async def pause_all(self) -> str:
+        """暂停所有下载"""
+        return await self._call("aria2.pauseAll")
+
+    async def unpause_all(self) -> str:
+        """恢复所有暂停的下载"""
+        return await self._call("aria2.unpauseAll")
 
     async def remove(self, gid: str) -> str:
         """移除下载"""

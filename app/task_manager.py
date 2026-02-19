@@ -41,8 +41,8 @@ class TaskManager:
         # 磁盘空间限制：空间不足时暂停 aria2 下载
         self._disk_paused: bool = False
         self._disk_usage_info: dict = {}  # 缓存磁盘使用信息
-        # CPU 自适应限流
-        self._cpu_throttled: int = 0  # 0=正常, 1=轻度, 2=重度
+        # CPU 连续调控
+        self._cpu_paused_gids: set = set()  # 因 CPU 限流暂停的 aria2 GID
         self._cpu_info: dict = {}
         self._original_upload_concurrency: int = 0  # 保存原始上传并发数
 
@@ -210,11 +210,13 @@ class TaskManager:
             return
 
         if used_gb >= max_gb and not self._disk_paused:
-            # 超限 → 暂停下载
-            logger.warning(f"磁盘使用 {used_gb}GB >= 限制 {max_gb}GB，暂停 aria2 下载")
+            # 超限 → 暂停所有下载（不只是阻止新任务，活跃下载也要停）
+            logger.warning(f"磁盘使用 {used_gb}GB >= 限制 {max_gb}GB，暂停所有 aria2 下载")
             try:
                 await self.aria2.change_global_option(
                     {"max-concurrent-downloads": "0"})
+                await self.aria2.pause_all()
+                self._cpu_paused_gids.clear()  # 磁盘全暂停，CPU 计数清零
                 self._disk_paused = True
                 self._disk_usage_info["paused"] = True
             except Exception as e:
@@ -224,99 +226,144 @@ class TaskManager:
             # 恢复（留 10% 缓冲避免反复切换）
             await self._resume_aria2_downloads()
 
+    def _get_cpu_adjusted_concurrent(self) -> int:
+        """获取 CPU 限流调整后的并发数"""
+        max_c = self.config["aria2"].get("max_concurrent", 3)
+        return max(0, max_c - len(self._cpu_paused_gids))
+
     async def _resume_aria2_downloads(self):
-        """恢复 aria2 下载并发数（仅在未被 CPU 限流重度时恢复到正常值）"""
-        # 如果 CPU 也在限流，恢复到 CPU 限流级别对应的值而不是全量
-        if self._cpu_throttled >= 2:
-            target = "1"
-        elif self._cpu_throttled == 1:
-            max_c = self.config["aria2"].get("max_concurrent", 3)
-            target = str(max(1, max_c // 2))
-        else:
-            target = str(self.config["aria2"].get("max_concurrent", 3))
+        """恢复 aria2 下载并发数（考虑 CPU 限流状态）"""
+        target = str(self._get_cpu_adjusted_concurrent())
         try:
+            await self.aria2.unpause_all()
             await self.aria2.change_global_option(
                 {"max-concurrent-downloads": target})
             self._disk_paused = False
             self._disk_usage_info["paused"] = False
-            logger.info(f"磁盘空间已恢复，恢复 aria2 并发数为 {target}")
+            logger.info(f"磁盘空间已恢复，恢复 aria2 下载，并发数={target}")
         except Exception as e:
             logger.error(f"恢复 aria2 下载失败: {e}")
 
     async def _check_cpu_usage(self):
-        """检测 CPU 使用率，三级调控并发"""
+        """检测 CPU 使用率，通过逐个暂停/恢复下载保持 CPU 在上下限之间"""
         cpu_limit = self.config["general"].get("cpu_limit", 85)
         if cpu_limit <= 0:
-            if self._cpu_throttled > 0:
-                await self._restore_cpu_throttle()
+            if self._cpu_paused_gids:
+                await self._cpu_resume_all()
             self._cpu_info = {}
             return
 
         try:
             cpu_pct = psutil.cpu_percent(interval=None)
+            cpu_lower = cpu_limit * 0.75  # 下限，例如 85*0.75 ≈ 64%
+
+            # 计算限流级别用于前端显示
+            max_c = self.config["aria2"].get("max_concurrent", 3)
+            paused_count = len(self._cpu_paused_gids)
+            if paused_count == 0:
+                throttle_level = 0
+            elif paused_count < max_c:
+                throttle_level = 1
+            else:
+                throttle_level = 2
+
             self._cpu_info = {
                 "percent": cpu_pct,
                 "limit": cpu_limit,
-                "throttled": self._cpu_throttled
+                "throttled": throttle_level
             }
 
             # 保存原始上传并发数（仅首次）
             if self._original_upload_concurrency == 0 and self.teldrive:
                 self._original_upload_concurrency = self.teldrive.upload_concurrency
 
-            level_threshold_low = cpu_limit * 0.82   # ~70% when limit=85
-            level_threshold_mid = cpu_limit * 0.94   # ~80% when limit=85
-
-            if cpu_pct >= cpu_limit and self._cpu_throttled < 2:
-                # 重度限流：并发=1
-                logger.warning(f"CPU {cpu_pct}% >= {cpu_limit}%，重度限流")
-                if not self._disk_paused:  # 磁盘暂停优先
-                    try:
-                        await self.aria2.change_global_option(
-                            {"max-concurrent-downloads": "1"})
-                    except Exception:
-                        pass
-                if self.teldrive:
-                    self.teldrive.upload_concurrency = 1
-                self._cpu_throttled = 2
-                self._cpu_info["throttled"] = 2
-
-            elif cpu_pct >= level_threshold_mid and self._cpu_throttled < 1:
-                # 轻度限流：并发减半
-                logger.info(f"CPU {cpu_pct}% >= {level_threshold_mid:.0f}%，轻度限流")
-                max_c = self.config["aria2"].get("max_concurrent", 3)
-                if not self._disk_paused:
-                    try:
-                        await self.aria2.change_global_option(
-                            {"max-concurrent-downloads": str(max(1, max_c // 2))})
-                    except Exception:
-                        pass
-                if self.teldrive and self._original_upload_concurrency > 1:
-                    self.teldrive.upload_concurrency = max(1, self._original_upload_concurrency // 2)
-                self._cpu_throttled = 1
-                self._cpu_info["throttled"] = 1
-
-            elif cpu_pct < level_threshold_low and self._cpu_throttled > 0:
-                # 恢复
-                await self._restore_cpu_throttle()
+            if cpu_pct >= cpu_limit:
+                # CPU 超上限：暂停一个活跃下载
+                await self._cpu_pause_one()
+            elif cpu_pct < cpu_lower and self._cpu_paused_gids:
+                # CPU 低于下限：恢复一个暂停的下载
+                await self._cpu_resume_one()
 
         except Exception as e:
             logger.debug(f"检测 CPU 使用失败: {e}")
 
-    async def _restore_cpu_throttle(self):
-        """恢复 CPU 限流前的并发数"""
-        max_concurrent = str(self.config["aria2"].get("max_concurrent", 3))
-        if not self._disk_paused:  # 磁盘暂停时不恢复 aria2
+    async def _cpu_pause_one(self):
+        """暂停一个活跃的 aria2 下载以降低 CPU"""
+        try:
+            active = await self.aria2.tell_active() or []
+            for item in active:
+                gid = item.get("gid", "")
+                if not gid or gid in self._cpu_paused_gids:
+                    continue
+                try:
+                    await self.aria2.pause(gid)
+                except Exception:
+                    # BT 任务可能需要 forcePause
+                    try:
+                        await self.aria2._call("aria2.forcePause", gid)
+                    except Exception:
+                        continue
+                self._cpu_paused_gids.add(gid)
+                # 同步减少并发数，防止等待中的任务补位
+                new_c = self._get_cpu_adjusted_concurrent()
+                if not self._disk_paused:
+                    await self.aria2.change_global_option(
+                        {"max-concurrent-downloads": str(new_c)})
+                # 有暂停的下载时降低上传并发
+                if self.teldrive and self._original_upload_concurrency > 1:
+                    self.teldrive.upload_concurrency = max(
+                        1, self._original_upload_concurrency // 2)
+                logger.info(f"CPU 限流：暂停下载 {gid}，并发调整为 {new_c}")
+                return
+            logger.debug("CPU 过高但无活跃下载可暂停")
+        except Exception as e:
+            logger.error(f"CPU 限流暂停下载失败: {e}")
+
+    async def _cpu_resume_one(self):
+        """恢复一个因 CPU 限流暂停的下载"""
+        if not self._cpu_paused_gids:
+            return
+        gid = next(iter(self._cpu_paused_gids))
+        try:
+            await self.aria2.unpause(gid)
+            logger.info(f"CPU 恢复：恢复下载 {gid}")
+        except Exception:
+            # GID 可能已不存在（用户取消等），静默清理
+            logger.debug(f"恢复下载 {gid} 失败，清理记录")
+        self._cpu_paused_gids.discard(gid)
+
+        # 同步恢复并发数
+        new_c = self._get_cpu_adjusted_concurrent()
+        if not self._disk_paused:
             try:
                 await self.aria2.change_global_option(
-                    {"max-concurrent-downloads": max_concurrent})
+                    {"max-concurrent-downloads": str(new_c)})
+            except Exception:
+                pass
+        # 全部恢复后还原上传并发
+        if not self._cpu_paused_gids and self.teldrive and self._original_upload_concurrency > 0:
+            self.teldrive.upload_concurrency = self._original_upload_concurrency
+        logger.info(f"CPU 恢复：并发调整为 {new_c}")
+
+    async def _cpu_resume_all(self):
+        """恢复所有因 CPU 限流暂停的下载"""
+        for gid in list(self._cpu_paused_gids):
+            try:
+                await self.aria2.unpause(gid)
+            except Exception:
+                pass
+        self._cpu_paused_gids.clear()
+
+        max_c = self.config["aria2"].get("max_concurrent", 3)
+        if not self._disk_paused:
+            try:
+                await self.aria2.change_global_option(
+                    {"max-concurrent-downloads": str(max_c)})
             except Exception:
                 pass
         if self.teldrive and self._original_upload_concurrency > 0:
             self.teldrive.upload_concurrency = self._original_upload_concurrency
-        self._cpu_throttled = 0
-        self._cpu_info["throttled"] = 0
-        logger.info(f"CPU 负载恢复正常，恢复并发数")
+        logger.info(f"CPU 限流解除：恢复所有下载，并发={max_c}")
 
     async def _sync_aria2_tasks(self):
         """从 aria2 获取所有任务，同步到本地数据库"""
@@ -491,60 +538,41 @@ class TaskManager:
                     await db.update_task(task_id, status="completed")
                     await self._broadcast_task_update(task_id)
 
-    def _map_upload_path(self, local_path: str) -> str:
-        """如果配置了 upload_dir，将 aria2 下载路径映射到本地上传路径"""
-        upload_dir = self.config["teldrive"].get("upload_dir", "")
-        if not upload_dir:
-            return local_path
+    def _calc_teldrive_path(self, local_path: str) -> str:
+        """计算文件在 TelDrive 上的目标目录。
 
-        download_dir = get_download_dir(self.config)
-        norm_local = os.path.normpath(local_path)
-        norm_dl = os.path.normpath(download_dir)
-        if norm_local.startswith(norm_dl):
-            rel = os.path.relpath(norm_local, norm_dl)
-            mapped = os.path.join(upload_dir, rel)
-            logger.info(f"路径映射: {local_path} -> {mapped}")
-            return mapped
-        else:
-            mapped = os.path.join(upload_dir, os.path.basename(local_path))
-            logger.info(f"路径映射(basename): {local_path} -> {mapped}")
-            return mapped
-
-    def _resolve_local_path(self, original_path: str) -> str:
-        """解析本地上传路径：优先使用原始路径，不存在时尝试 upload_dir 映射"""
-        if original_path and os.path.exists(original_path):
-            return original_path
-        mapped = self._map_upload_path(original_path)
-        if mapped and os.path.exists(mapped):
-            logger.info(f"使用映射路径: {original_path} -> {mapped}")
-            return mapped
-        return original_path  # 返回原始路径（后续会报错文件不存在）
-
-    def _calc_teldrive_subdir(self, original_path: str,
-                              base_teldrive_path: str) -> str:
-        """根据文件相对于 download_dir 的子目录结构，计算 TelDrive 的目标路径。
+        公式: target_path + (文件所在目录 - download_dir)
 
         例如:
-            download_dir = /downloads/te
-            original_path = /downloads/te/电视剧/Season1/ep01.mp4
-            base_teldrive_path = /
-            → 返回 /电视剧/Season1
+            target_path   = /movies
+            download_dir  = /downloads
+            local_path    = /downloads/电视剧/Season1/ep01.mp4
+            → 返回 /movies/电视剧/Season1
         """
+        target_path = self.config["teldrive"].get("target_path", "/")
         download_dir = get_download_dir(self.config)
         norm_dl = os.path.normpath(download_dir)
-        norm_fp = os.path.normpath(original_path)
+        norm_fp = os.path.normpath(local_path)
 
-        if norm_fp.startswith(norm_dl + os.sep):
-            rel = os.path.relpath(norm_fp, norm_dl)
-            # rel 类似 "电视剧/Season1/ep01.mp4"
-            rel_dir = os.path.dirname(rel).replace("\\", "/")
-            if rel_dir and rel_dir != ".":
-                result = base_teldrive_path.rstrip("/") + "/" + rel_dir
-                logger.info(f"[路径] 保留文件夹结构: {rel_dir} -> "
-                            f"teldrive={result}")
-                return result
+        # 取文件所在目录（如果是目录则取其父目录，因为目录名会在上传时拼上去）
+        if os.path.isdir(norm_fp):
+            file_dir = norm_fp
+        else:
+            file_dir = os.path.dirname(norm_fp)
 
-        return base_teldrive_path
+        # 计算相对路径: 文件所在目录 - download_dir
+        if file_dir.startswith(norm_dl + os.sep) or file_dir == norm_dl:
+            rel_dir = os.path.relpath(file_dir, norm_dl).replace("\\", "/")
+            if rel_dir == ".":
+                result = target_path
+            else:
+                result = target_path.rstrip("/") + "/" + rel_dir
+        else:
+            # 不在 download_dir 下时直接用 target_path
+            result = target_path
+
+        logger.info(f"[路径] {local_path} -> teldrive={result}")
+        return result
 
     async def _handle_download_complete(self, task_id: str, gid: str):
         """下载完成后自动上传到 TelDrive"""
@@ -558,18 +586,24 @@ class TaskManager:
                 logger.warning(f"任务 {task_id} 无本地文件路径，跳过上传")
                 return
 
-            original_path = task["local_path"]
-            teldrive_path = task.get("teldrive_path", "/")
-            local_path = self._resolve_local_path(original_path)
+            local_path = task["local_path"]
+            teldrive_path = self._calc_teldrive_path(local_path)
+
+            # 等待文件就绪（aria2 可能还在写入/移动文件）
+            for attempt in range(5):
+                if os.path.exists(local_path):
+                    break
+                logger.info(f"任务 {task_id} 等待文件就绪 ({attempt+1}/5): {local_path}")
+                await asyncio.sleep(1)
 
             logger.info(f"[上传] 任务 {task_id}: "
-                        f"original={original_path}, resolved={local_path}, "
+                        f"local={local_path}, "
                         f"isdir={os.path.isdir(local_path)}, "
                         f"exists={os.path.exists(local_path)}, "
                         f"teldrive={teldrive_path}")
 
             if not os.path.exists(local_path):
-                error_msg = f"文件不存在: {local_path}"
+                error_msg = f"上传中断:本地文件不存在"
                 logger.error(f"任务 {task_id} 上传失败: {error_msg}")
                 await db.update_task(task_id, status="failed", error=error_msg)
                 await self._broadcast_task_update(task_id)
@@ -583,23 +617,12 @@ class TaskManager:
                 logger.info(f"[上传] 走文件夹上传: {local_path}")
                 await self._upload_directory(task_id, local_path, teldrive_path)
             else:
-                # 保留文件夹结构：从文件路径中提取子目录，追加到 teldrive_path
-                upload_teldrive_path = self._calc_teldrive_subdir(
-                    original_path, teldrive_path)
                 logger.info(f"[上传] 走单文件上传: {local_path} -> "
-                            f"teldrive={upload_teldrive_path}")
-                await self._upload(task_id, local_path, upload_teldrive_path)
+                            f"teldrive={teldrive_path}")
+                await self._upload(task_id, local_path, teldrive_path)
 
-            # 清理本地文件/文件夹
-            task = await db.get_task(task_id)
-            if task and task["status"] == "completed" and self.config["general"]["auto_delete"]:
-                if local_path and os.path.exists(local_path):
-                    if os.path.isdir(local_path):
-                        shutil.rmtree(local_path, ignore_errors=True)
-                        logger.info(f"已删除本地文件夹: {local_path}")
-                    else:
-                        os.remove(local_path)
-                        logger.info(f"已删除本地文件: {local_path}")
+            # 上传成功后清理本地文件
+            await self._auto_delete_local(task_id, local_path)
 
         except asyncio.CancelledError:
             logger.info(f"任务 {task_id} 上传被取消（用户重试或取消）")
@@ -611,6 +634,25 @@ class TaskManager:
         finally:
             self._uploading_gids.discard(gid)
             self._upload_tasks.pop(task_id, None)
+
+    async def _auto_delete_local(self, task_id: str, local_path: str):
+        """上传成功后自动删除本地文件（如果配置了 auto_delete）"""
+        try:
+            task = await db.get_task(task_id)
+            if not task or task["status"] != "completed":
+                return
+            if not self.config["general"].get("auto_delete", True):
+                return
+            if not local_path or not os.path.exists(local_path):
+                return
+            if os.path.isdir(local_path):
+                shutil.rmtree(local_path, ignore_errors=True)
+                logger.info(f"已删除本地文件夹: {local_path}")
+            else:
+                os.remove(local_path)
+                logger.info(f"已删除本地文件: {local_path}")
+        except Exception as e:
+            logger.warning(f"删除本地文件失败: {local_path}, {e}")
 
     # ===========================================
     # 上传
@@ -836,14 +878,11 @@ class TaskManager:
                     pass
             # 删除本地文件/文件夹
             local = task.get("local_path", "")
-            if local:
-                mapped = self._map_upload_path(local)
-                for p in (local, mapped):
-                    if p and os.path.exists(p):
-                        if os.path.isdir(p):
-                            shutil.rmtree(p, ignore_errors=True)
-                        else:
-                            os.remove(p)
+            if local and os.path.exists(local):
+                if os.path.isdir(local):
+                    shutil.rmtree(local, ignore_errors=True)
+                else:
+                    os.remove(local)
             await db.update_task(task_id, status="cancelled")
             await self._broadcast_task_update(task_id)
             return {"success": True, "message": "已取消"}
@@ -878,13 +917,6 @@ class TaskManager:
 
         # 如果本地文件/文件夹已存在，直接重试上传
         local_path = task.get("local_path", "")
-        mapped_path = self._map_upload_path(local_path) if local_path else ""
-
-        # 检查原始路径或映射路径是否存在
-        if mapped_path and os.path.exists(mapped_path):
-            t = asyncio.create_task(self._retry_upload(task_id))
-            self._upload_tasks[task_id] = t
-            return {"success": True, "message": "正在重试上传"}
         if local_path and os.path.exists(local_path):
             t = asyncio.create_task(self._retry_upload(task_id))
             self._upload_tasks[task_id] = t
@@ -925,17 +957,15 @@ class TaskManager:
             if not task:
                 return
 
-            original_path = task.get("local_path", "")
-            teldrive_path = task.get("teldrive_path", "/")
-
-            # 解析路径：优先原始路径，不存在时尝试映射
-            local_path = self._resolve_local_path(original_path) if original_path else ""
+            local_path = task.get("local_path", "")
 
             if not local_path or not os.path.exists(local_path):
                 await db.update_task(task_id, status="failed",
                                      error="本地文件不存在，无法重试上传")
                 await self._broadcast_task_update(task_id)
                 return
+
+            teldrive_path = self._calc_teldrive_path(local_path)
 
             # 重置上传状态
             await db.update_task(task_id, status="uploading",
@@ -946,20 +976,10 @@ class TaskManager:
             if os.path.isdir(local_path):
                 await self._upload_directory(task_id, local_path, teldrive_path)
             else:
-                upload_teldrive_path = self._calc_teldrive_subdir(
-                    original_path, teldrive_path)
-                await self._upload(task_id, local_path, upload_teldrive_path)
+                await self._upload(task_id, local_path, teldrive_path)
 
-            # 清理本地文件/文件夹
-            task = await db.get_task(task_id)
-            if task and task["status"] == "completed" and self.config["general"]["auto_delete"]:
-                if local_path and os.path.exists(local_path):
-                    if os.path.isdir(local_path):
-                        shutil.rmtree(local_path, ignore_errors=True)
-                        logger.info(f"已删除本地文件夹: {local_path}")
-                    else:
-                        os.remove(local_path)
-                        logger.info(f"已删除本地文件: {local_path}")
+            # 上传成功后清理本地文件
+            await self._auto_delete_local(task_id, local_path)
 
         except asyncio.CancelledError:
             logger.info(f"任务 {task_id} 重试上传被取消")

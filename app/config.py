@@ -29,7 +29,6 @@ DEFAULT_CONFIG = {
         "chunk_size": "500M",
         "upload_concurrency": 4,
         "random_chunk_name": True,
-        "upload_dir": "",
         "target_path": "/"
     },
     "general": {
