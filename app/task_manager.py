@@ -313,6 +313,34 @@ class TaskManager:
             logger.info(f"路径映射(basename): {local_path} -> {mapped}")
             return mapped
 
+    def _detect_folder_path(self, file_path: str) -> str:
+        """检测文件是否在 BT 下载子文件夹内，如果是则返回文件夹路径，否则返回原始文件路径。
+
+        原理：aria2 BT 下载会在 download_dir 下创建子文件夹（如 download_dir/TorrentName/file.mp4）。
+        通过对比文件路径和 download_dir，如果相对路径有多级（如 TorrentName/file.mp4），
+        说明文件在 BT 子文件夹内，取出顶层文件夹路径作为上传根。
+        """
+        download_dir = get_download_dir(self.config)
+        norm_dl = os.path.normpath(download_dir)
+        norm_fp = os.path.normpath(file_path)
+
+        # 文件必须在 download_dir 下
+        if not norm_fp.startswith(norm_dl + os.sep):
+            return file_path
+
+        rel = os.path.relpath(norm_fp, norm_dl)
+        parts = Path(rel).parts
+
+        if len(parts) > 1:
+            # 文件在子文件夹内（如 TorrentName/file.mp4 或 TorrentName/Sub/file.mp4）
+            top_folder = parts[0]
+            folder_path = os.path.join(download_dir, top_folder)
+            if os.path.isdir(folder_path):
+                logger.info(f"检测到 BT 文件夹: {folder_path}")
+                return folder_path
+
+        return file_path
+
     async def _handle_download_complete(self, task_id: str, gid: str):
         """下载完成后自动上传到 TelDrive"""
         if gid in self._uploading_gids:
@@ -325,8 +353,13 @@ class TaskManager:
                 logger.warning(f"任务 {task_id} 无本地文件路径，跳过上传")
                 return
 
-            local_path = self._map_upload_path(task["local_path"])
+            original_path = task["local_path"]
             teldrive_path = task.get("teldrive_path", "/")
+
+            # 检测是否在 BT 子文件夹内（在 upload_dir 映射之前，用原始路径判断）
+            detected_path = self._detect_folder_path(original_path)
+            # 再做 upload_dir 映射
+            local_path = self._map_upload_path(detected_path)
 
             # 检查文件/文件夹是否存在
             if not os.path.exists(local_path):
@@ -645,8 +678,12 @@ class TaskManager:
             if not task:
                 return
 
-            local_path = self._map_upload_path(task.get("local_path", ""))
+            original_path = task.get("local_path", "")
             teldrive_path = task.get("teldrive_path", "/")
+
+            # 检测 BT 文件夹 + upload_dir 映射
+            detected_path = self._detect_folder_path(original_path) if original_path else ""
+            local_path = self._map_upload_path(detected_path) if detected_path else ""
 
             if not local_path or not os.path.exists(local_path):
                 await db.update_task(task_id, status="failed",
