@@ -181,18 +181,18 @@ class TaskManager:
             parsed = Aria2Client.parse_status(item)
             aria2_status = parsed["status"]
 
-            # BT 多文件下载：用 aria2 的 dir + bittorrent.info.name 拼出文件夹路径
+            # BT 下载：用 aria2 的 dir + bittorrent.info.name 作为路径
+            # 单文件BT: bt_path 是文件路径 → isdir=False → 单文件上传
+            # 多文件BT: bt_path 是文件夹路径 → isdir=True → 文件夹上传
             bt_name = item.get("bittorrent", {}).get("info", {}).get("name", "")
             task_dir = item.get("dir", "")
-            files_count = len(item.get("files", []))
             if bt_name and task_dir:
-                logger.debug(f"[BT检测] gid={gid}, bt_name={bt_name}, "
-                             f"task_dir={task_dir}, files_count={files_count}")
-                if files_count > 1:
-                    bt_folder = os.path.join(task_dir, bt_name)
-                    parsed["file_path"] = bt_folder
-                    parsed["filename"] = bt_name
-                    logger.info(f"[BT检测] 多文件BT，使用文件夹路径: {bt_folder}")
+                bt_path = os.path.join(task_dir, bt_name)
+                logger.info(f"[BT检测] gid={gid}, bt_name={bt_name}, "
+                            f"task_dir={task_dir}, bt_path={bt_path}, "
+                            f"files={len(item.get('files', []))}")
+                parsed["file_path"] = bt_path
+                parsed["filename"] = bt_name
 
             # 判断是否已入库
             if gid not in self._known_gids:
@@ -326,33 +326,15 @@ class TaskManager:
             logger.info(f"路径映射(basename): {local_path} -> {mapped}")
             return mapped
 
-    def _detect_folder_path(self, file_path: str) -> str:
-        """检测文件是否在 BT 下载子文件夹内，如果是则返回文件夹路径，否则返回原始文件路径。
-
-        原理：aria2 BT 下载会在 download_dir 下创建子文件夹（如 download_dir/TorrentName/file.mp4）。
-        通过对比文件路径和 download_dir，如果相对路径有多级（如 TorrentName/file.mp4），
-        说明文件在 BT 子文件夹内，取出顶层文件夹路径作为上传根。
-        """
-        download_dir = get_download_dir(self.config)
-        norm_dl = os.path.normpath(download_dir)
-        norm_fp = os.path.normpath(file_path)
-
-        # 文件必须在 download_dir 下
-        if not norm_fp.startswith(norm_dl + os.sep):
-            return file_path
-
-        rel = os.path.relpath(norm_fp, norm_dl)
-        parts = Path(rel).parts
-
-        if len(parts) > 1:
-            # 文件在子文件夹内（如 TorrentName/file.mp4 或 TorrentName/Sub/file.mp4）
-            top_folder = parts[0]
-            folder_path = os.path.join(download_dir, top_folder)
-            if os.path.isdir(folder_path):
-                logger.info(f"检测到 BT 文件夹: {folder_path}")
-                return folder_path
-
-        return file_path
+    def _resolve_local_path(self, original_path: str) -> str:
+        """解析本地上传路径：优先使用原始路径，不存在时尝试 upload_dir 映射"""
+        if original_path and os.path.exists(original_path):
+            return original_path
+        mapped = self._map_upload_path(original_path)
+        if mapped and os.path.exists(mapped):
+            logger.info(f"使用映射路径: {original_path} -> {mapped}")
+            return mapped
+        return original_path  # 返回原始路径（后续会报错文件不存在）
 
     async def _handle_download_complete(self, task_id: str, gid: str):
         """下载完成后自动上传到 TelDrive"""
@@ -368,27 +350,15 @@ class TaskManager:
 
             original_path = task["local_path"]
             teldrive_path = task.get("teldrive_path", "/")
+            local_path = self._resolve_local_path(original_path)
 
-            logger.info(f"[上传调试] 任务 {task_id}: "
-                        f"DB local_path={original_path}, "
-                        f"teldrive_path={teldrive_path}")
+            logger.info(f"[上传] 任务 {task_id}: "
+                        f"original={original_path}, resolved={local_path}, "
+                        f"isdir={os.path.isdir(local_path)}, "
+                        f"exists={os.path.exists(local_path)}, "
+                        f"teldrive={teldrive_path}")
 
-            # 检测是否在 BT 子文件夹内（在 upload_dir 映射之前，用原始路径判断）
-            detected_path = self._detect_folder_path(original_path)
-            logger.info(f"[上传调试] _detect_folder_path: {original_path} -> {detected_path}")
-
-            # 再做 upload_dir 映射
-            local_path = self._map_upload_path(detected_path)
-            logger.info(f"[上传调试] _map_upload_path: {detected_path} -> {local_path}")
-
-            is_dir = os.path.isdir(local_path)
-            is_file = os.path.isfile(local_path)
-            exists = os.path.exists(local_path)
-            logger.info(f"[上传调试] local_path={local_path}, "
-                        f"exists={exists}, isdir={is_dir}, isfile={is_file}")
-
-            # 检查文件/文件夹是否存在
-            if not exists:
+            if not os.path.exists(local_path):
                 error_msg = f"文件不存在: {local_path}"
                 logger.error(f"任务 {task_id} 上传失败: {error_msg}")
                 await db.update_task(task_id, status="failed", error=error_msg)
@@ -399,12 +369,11 @@ class TaskManager:
                                  download_progress=100.0, download_speed="")
             await self._broadcast_task_update(task_id)
 
-            # 判断是文件夹还是单文件
-            if is_dir:
-                logger.info(f"[上传调试] 走文件夹上传路径: {local_path}")
+            if os.path.isdir(local_path):
+                logger.info(f"[上传] 走文件夹上传: {local_path}")
                 await self._upload_directory(task_id, local_path, teldrive_path)
             else:
-                logger.info(f"[上传调试] 走单文件上传路径: {local_path}")
+                logger.info(f"[上传] 走单文件上传: {local_path}")
                 await self._upload(task_id, local_path, teldrive_path)
 
             # 清理本地文件/文件夹
@@ -709,9 +678,8 @@ class TaskManager:
             original_path = task.get("local_path", "")
             teldrive_path = task.get("teldrive_path", "/")
 
-            # 检测 BT 文件夹 + upload_dir 映射
-            detected_path = self._detect_folder_path(original_path) if original_path else ""
-            local_path = self._map_upload_path(detected_path) if detected_path else ""
+            # 解析路径：优先原始路径，不存在时尝试映射
+            local_path = self._resolve_local_path(original_path) if original_path else ""
 
             if not local_path or not os.path.exists(local_path):
                 await db.update_task(task_id, status="failed",
