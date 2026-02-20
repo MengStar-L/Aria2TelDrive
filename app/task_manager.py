@@ -282,19 +282,16 @@ class TaskManager:
         lower_threshold = max_gb * 0.6
 
         if used_gb >= upper_threshold and not self._disk_throttled:
-            # 超上限 → 冻结并发数为当前活跃下载数，阻止新任务派发
+            # 超上限 → 限制并发数为 1，阻止新任务派发
             try:
-                active = await self.aria2.tell_active() or []
-                active_count = max(len(active), 1)
-                target = min(active_count, max_concurrent)
                 self._disk_throttled = True
-                self._disk_limited_concurrent = target
+                self._disk_limited_concurrent = 1
                 self._disk_usage_info["throttled"] = 1
-                self._disk_usage_info["current_concurrent"] = target
+                self._disk_usage_info["current_concurrent"] = 1
                 await self._apply_concurrent()
                 logger.warning(
                     f"磁盘使用 {used_gb}GB >= 上限 {upper_threshold:.1f}GB，"
-                    f"限制并发数为 {target}（当前活跃 {len(active)}）")
+                    f"限制并发数为 1")
             except Exception as e:
                 logger.error(f"磁盘限流设置并发数失败: {e}")
 
