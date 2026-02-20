@@ -1221,7 +1221,7 @@ class TaskManager:
             await db.update_task(task_id, status="failed", error=str(e))
             await self._broadcast_task_update(task_id)
         finally:
-            self._upload_semaphore.release()
+            self._release_upload_slot()
             self._upload_tasks.pop(task_id, None)
 
     async def delete_task(self, task_id: str) -> dict:
