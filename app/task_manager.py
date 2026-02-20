@@ -245,15 +245,49 @@ class TaskManager:
             logger.debug(f"检测磁盘使用失败: {e}")
             return
 
-        # 计算限流级别用于前端显示
+        # 限流逻辑：仅在设置了上限时生效
+        if max_gb <= 0:
+            if self._disk_throttled:
+                await self._resume_aria2_downloads()
+        else:
+            upper_threshold = max_gb * 0.9
+            lower_threshold = max_gb * 0.6
+
+            if used_gb >= upper_threshold and not self._disk_throttled:
+                # 超上限 → 限制并发数为 1，阻止新任务派发
+                try:
+                    self._disk_throttled = True
+                    self._disk_limited_concurrent = 1
+                    await self._apply_concurrent()
+                    logger.warning(
+                        f"磁盘使用 {used_gb}GB >= 上限 {upper_threshold:.1f}GB，"
+                        f"限制并发数为 1")
+                except Exception as e:
+                    logger.error(f"磁盘限流设置并发数失败: {e}")
+
+            elif self._disk_throttled and used_gb < lower_threshold:
+                # 低于下限 → 逐步恢复并发数（每个监控周期 +1）
+                new_concurrent = min(self._disk_limited_concurrent + 1, max_concurrent)
+                try:
+                    self._disk_limited_concurrent = new_concurrent
+                    await self._apply_concurrent()
+                    logger.info(f"磁盘空间释放(已用 {used_gb}GB < 下限 {lower_threshold:.1f}GB)，"
+                                f"并发数恢复到 {new_concurrent}/{max_concurrent}")
+                    if new_concurrent >= max_concurrent:
+                        self._disk_throttled = False
+                        self._disk_limited_concurrent = 0
+                        logger.info("磁盘限流解除，并发数已完全恢复")
+                except Exception as e:
+                    logger.error(f"磁盘限流恢复并发数失败: {e}")
+
+        # 限流逻辑执行完后，构建前端显示数据（确保状态准确）
         if not self._disk_throttled:
             throttle_level = 0
         elif self._disk_limited_concurrent < max_concurrent:
-            throttle_level = 1  # 限流中
+            throttle_level = 1
         else:
-            throttle_level = 0  # 已恢复到最大
+            throttle_level = 0
 
-        # 设置了上限时，剩余空间和百分比基于用户设定值计算
         if max_gb > 0:
             display_free = round(max(0, max_gb - used_gb), 2)
             display_percent = round(used_gb / max_gb * 100, 1)
@@ -271,45 +305,6 @@ class TaskManager:
             "current_concurrent": self._disk_limited_concurrent if self._disk_throttled else max_concurrent,
             "max_concurrent": max_concurrent
         }
-
-        # 限流逻辑：仅在设置了上限时生效
-        if max_gb <= 0:
-            if self._disk_throttled:
-                await self._resume_aria2_downloads()
-            return
-
-        upper_threshold = max_gb * 0.9
-        lower_threshold = max_gb * 0.6
-
-        if used_gb >= upper_threshold and not self._disk_throttled:
-            # 超上限 → 限制并发数为 1，阻止新任务派发
-            try:
-                self._disk_throttled = True
-                self._disk_limited_concurrent = 1
-                self._disk_usage_info["throttled"] = 1
-                self._disk_usage_info["current_concurrent"] = 1
-                await self._apply_concurrent()
-                logger.warning(
-                    f"磁盘使用 {used_gb}GB >= 上限 {upper_threshold:.1f}GB，"
-                    f"限制并发数为 1")
-            except Exception as e:
-                logger.error(f"磁盘限流设置并发数失败: {e}")
-
-        elif self._disk_throttled and used_gb < lower_threshold:
-            # 低于下限 → 逐步恢复并发数（每个监控周期 +1）
-            new_concurrent = min(self._disk_limited_concurrent + 1, max_concurrent)
-            try:
-                self._disk_limited_concurrent = new_concurrent
-                await self._apply_concurrent()
-                logger.info(f"磁盘空间释放(已用 {used_gb}GB < 下限 {lower_threshold:.1f}GB)，"
-                            f"并发数恢复到 {new_concurrent}/{max_concurrent}")
-                if new_concurrent >= max_concurrent:
-                    self._disk_throttled = False
-                    self._disk_limited_concurrent = 0
-                    self._disk_usage_info["throttled"] = 0
-                    logger.info("磁盘限流解除，并发数已完全恢复")
-            except Exception as e:
-                logger.error(f"磁盘限流恢复并发数失败: {e}")
 
     def _get_effective_concurrent(self) -> int:
         """获取磁盘限流后的有效并发数，绝不超过用户设定值"""
