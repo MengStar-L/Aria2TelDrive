@@ -82,6 +82,8 @@ class TaskManager:
         self._init_clients()
         # upload_concurrency 变更后无需重建对象，
         # _wait_upload_slot 每次实时读取 config 值
+        # 唤醒等待槽位的协程，让它们用新并发数重新检查
+        self._upload_slot_event.set()
         # 异步同步 aria2 全局选项
         asyncio.create_task(self._apply_aria2_options())
 
