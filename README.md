@@ -5,15 +5,17 @@ aria2 下载 + TelDrive 上传中转服务 —— 通过 Web 面板管理下载�
 ## 功能特性
 
 - 📥 **aria2 下载**：通过 aria2 RPC 接口下载文件，支持暂停/恢复/重试
-- 📤 **自动上传**：下载完成后自动分片上传到 TelDrive
+- 📤 **自动上传**：下载完成后自动分片上传到 TelDrive，支持文件夹结构保留
 - 🌐 **Web 管理面板**：可视化任务管理，实时进度显示
 - 📊 **WebSocket 推送**：实时同步下载/上传进度到前端
 - 🗑️ **自动清理**：上传完成后可自动删除本地文件
 - 💾 **磁盘空间限流**：设置磁盘使用上限，达到 90% 时自动限制下载并发数，空间降至 60% 后逐步恢复
 - 📈 **仪表盘监控**：实时显示磁盘使用量、CPU 使用率、下载/上传速度等系统状态
 - 🧠 **CPU 自适应限速**：根据系统 CPU 使用率自动限制下载速度，CPU 恢复后逐步解除限速
+- 🔄 **上传并发动态调整**：修改上传并发数后立即生效，无需重启，支持热更新
 - 🧩 **Random Chunking 支持**：兼容 TelDrive Random Chunking 模式
-- 🔄 **断点续传**：分片上传失败自动重试
+- ♻️ **自动重试**：下载/上传失败自动重试，支持手动一键重试
+- 🧹 **批量管理**：支持一键清除已完成/失败任务
 
 ## 部署步骤
 
@@ -62,7 +64,7 @@ api_host = "http://localhost:7888"  # TelDrive API 地址
 access_token = ""                   # TelDrive JWT Token
 channel_id = 0                      # Telegram 频道 ID
 chunk_size = "500M"                 # 分片大小 (支持 M/G 后缀)
-upload_concurrency = 4              # 上传并发数
+upload_concurrency = 4              # 上传并发数 (支持热更新)
 upload_dir = ""                     # 上传文件路径 (留空使用下载目录)
 target_path = "/"                   # TelDrive 目标路径
 
@@ -70,7 +72,7 @@ target_path = "/"                   # TelDrive 目标路径
 max_retries = 3                     # 失败重试次数
 auto_delete = true                  # 上传后自动删除本地文件
 max_disk_usage = 0                  # 磁盘使用上限(GB)，达90%限制并发，降至60%恢复，0=不限制
-cpu_limit = 85                      # CPU 使用率上限(%)，超过时降低下载并发，0=不限制
+cpu_limit = 85                      # CPU 使用率上限(%)，超过时限制下载速度，0=不限制
 ```
 
 ### 4. 确保 aria2 已运行

@@ -6,3 +6,4 @@ config.toml
 config.json
 venv/
 .env
+REQUIREMENTS.md
