@@ -42,6 +42,7 @@ class TaskManager:
         self._disk_throttled: bool = False
         self._disk_limited_concurrent: int = 0  # 磁盘限流期间的当前并发数限制，0=未限流
         self._disk_usage_info: dict = {}  # 缓存磁盘使用信息
+        self._disk_recovery_time: float = 0.0  # 上次恢复并发的时间戳，用于6s冷却
         # CPU 限速：通过限制总下载速度控制 CPU 使用率
         self._cpu_speed_limit: int = 0  # 当前速度限制(bytes/sec)，0=无限制
         self._cpu_info: dict = {}
@@ -201,15 +202,17 @@ class TaskManager:
                     self._upload_time_snapshot = now
 
                 # 每个步骤独立保护，单步失败不影响其他
-                try:
-                    await self._check_disk_usage()
-                except Exception as e:
-                    logger.debug(f"磁盘检测异常: {e}")
-
+                # 注意顺序：先检测 CPU，再检测磁盘
+                # 确保磁盘恢复并发时能感知到最新的 CPU 状态
                 try:
                     await self._check_cpu_usage()
                 except Exception as e:
                     logger.debug(f"CPU 检测异常: {e}")
+
+                try:
+                    await self._check_disk_usage()
+                except Exception as e:
+                    logger.debug(f"磁盘检测异常: {e}")
 
                 try:
                     await self._sync_aria2_tasks()
@@ -269,19 +272,31 @@ class TaskManager:
                     logger.error(f"磁盘限流设置并发数失败: {e}")
 
             elif self._disk_throttled and used_gb < lower_threshold:
-                # 低于下限 → 逐步恢复并发数（每个监控周期 +1）
-                new_concurrent = min(self._disk_limited_concurrent + 1, max_concurrent)
-                try:
-                    self._disk_limited_concurrent = new_concurrent
-                    await self._apply_concurrent()
-                    logger.info(f"磁盘空间释放(已用 {used_gb}GB < 下限 {lower_threshold:.1f}GB)，"
-                                f"并发数恢复到 {new_concurrent}/{max_concurrent}")
-                    if new_concurrent >= max_concurrent:
-                        self._disk_throttled = False
-                        self._disk_limited_concurrent = 0
-                        logger.info("磁盘限流解除，并发数已完全恢复")
-                except Exception as e:
-                    logger.error(f"磁盘限流恢复并发数失败: {e}")
+                # 低于下限 → 逐步恢复并发数（每次+1，冷却6秒后再检查磁盘是否仍安全）
+                import time
+                now = time.monotonic()
+                if now - self._disk_recovery_time >= 6.0:
+                    # 如果 CPU 正在限速，暂不增加并发，避免雪崩
+                    if self._cpu_speed_limit > 0:
+                        logger.info(f"磁盘恢复暂停：CPU 正在限速({self._cpu_speed_limit // 1024}KB/s)，"
+                                    f"等待 CPU 负载降低后再增加并发")
+                    elif used_gb < upper_threshold:
+                        new_concurrent = min(self._disk_limited_concurrent + 1, max_concurrent)
+                        try:
+                            self._disk_limited_concurrent = new_concurrent
+                            self._disk_recovery_time = now
+                            await self._apply_concurrent()
+                            logger.info(f"磁盘空间释放(已用 {used_gb}GB < 下限 {lower_threshold:.1f}GB)，"
+                                        f"并发数恢复到 {new_concurrent}/{max_concurrent}")
+                            if new_concurrent >= max_concurrent:
+                                self._disk_throttled = False
+                                self._disk_limited_concurrent = 0
+                                self._disk_recovery_time = 0.0
+                                logger.info("磁盘限流解除，并发数已完全恢复")
+                        except Exception as e:
+                            logger.error(f"磁盘限流恢复并发数失败: {e}")
+                    else:
+                        logger.info(f"磁盘恢复暂停：已用 {used_gb}GB 接近上限 {upper_threshold:.1f}GB")
 
         # 限流逻辑执行完后，构建前端显示数据（确保状态准确）
         if not self._disk_throttled:

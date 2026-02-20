@@ -1,9 +1,10 @@
-"""数据库模块 - SQLite 异步操作"""
+"""数据库模块 - SQLite 异步操作（连接池模式）"""
 
 import aiosqlite
 from pathlib import Path
 from typing import Optional
 import json
+import asyncio
 
 DB_PATH = Path(__file__).parent.parent / "tasks.db"
 
@@ -27,49 +28,71 @@ CREATE TABLE IF NOT EXISTS tasks (
 )
 """
 
+# 全局连接实例（复用，避免每次操作都开关连接）
+_db_conn: Optional[aiosqlite.Connection] = None
+_db_lock = asyncio.Lock()
+
+
+async def _get_conn() -> aiosqlite.Connection:
+    """获取或创建全局数据库连接"""
+    global _db_conn
+    if _db_conn is None:
+        _db_conn = await aiosqlite.connect(str(DB_PATH))
+        _db_conn.row_factory = aiosqlite.Row
+        # 启用 WAL 模式，减少锁竞争
+        await _db_conn.execute("PRAGMA journal_mode=WAL")
+        await _db_conn.execute("PRAGMA synchronous=NORMAL")
+    return _db_conn
+
 
 async def init_db():
     """初始化数据库"""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(CREATE_TABLE_SQL)
-        await db.commit()
+    conn = await _get_conn()
+    await conn.execute(CREATE_TABLE_SQL)
+    await conn.commit()
+
+
+async def close_db():
+    """关闭数据库连接"""
+    global _db_conn
+    if _db_conn is not None:
+        await _db_conn.close()
+        _db_conn = None
 
 
 async def add_task(task_id: str, url: str, filename: str = None,
                    teldrive_path: str = "/") -> dict:
     """添加新任务"""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            """INSERT OR IGNORE INTO tasks (task_id, url, filename, teldrive_path)
-               VALUES (?, ?, ?, ?)""",
-            (task_id, url, filename, teldrive_path)
-        )
-        await db.commit()
+    conn = await _get_conn()
+    await conn.execute(
+        """INSERT OR IGNORE INTO tasks (task_id, url, filename, teldrive_path)
+           VALUES (?, ?, ?, ?)""",
+        (task_id, url, filename, teldrive_path)
+    )
+    await conn.commit()
     return await get_task(task_id)
 
 
 async def get_task(task_id: str) -> Optional[dict]:
     """获取单个任务"""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return dict(row)
+    conn = await _get_conn()
+    async with conn.execute(
+        "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            return dict(row)
     return None
 
 
 async def get_all_tasks() -> list:
     """获取所有任务"""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM tasks ORDER BY created_at DESC"
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+    conn = await _get_conn()
+    async with conn.execute(
+        "SELECT * FROM tasks ORDER BY created_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 async def update_task(task_id: str, **kwargs) -> Optional[dict]:
@@ -81,44 +104,42 @@ async def update_task(task_id: str, **kwargs) -> Optional[dict]:
     values = list(kwargs.values())
     values.append(task_id)
 
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            f"UPDATE tasks SET {fields}, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
-            values
-        )
-        await db.commit()
+    conn = await _get_conn()
+    await conn.execute(
+        f"UPDATE tasks SET {fields}, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+        values
+    )
+    await conn.commit()
     return await get_task(task_id)
 
 
 async def delete_task(task_id: str) -> bool:
     """删除任务记录"""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        cursor = await db.execute(
-            "DELETE FROM tasks WHERE task_id = ?", (task_id,)
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    conn = await _get_conn()
+    cursor = await conn.execute(
+        "DELETE FROM tasks WHERE task_id = ?", (task_id,)
+    )
+    await conn.commit()
+    return cursor.rowcount > 0
 
 
 async def get_active_tasks() -> list:
     """获取所有活跃任务（下载中或上传中）"""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM tasks WHERE status IN ('pending', 'downloading', 'uploading')"
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+    conn = await _get_conn()
+    async with conn.execute(
+        "SELECT * FROM tasks WHERE status IN ('pending', 'downloading', 'uploading')"
+    ) as cursor:
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 async def get_task_by_gid(gid: str) -> Optional[dict]:
     """按 aria2 GID 查询任务"""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM tasks WHERE aria2_gid = ?", (gid,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return dict(row)
+    conn = await _get_conn()
+    async with conn.execute(
+        "SELECT * FROM tasks WHERE aria2_gid = ?", (gid,)
+    ) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            return dict(row)
     return None

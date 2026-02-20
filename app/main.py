@@ -19,6 +19,7 @@ from pathlib import Path
 from app.routes import api, settings, ws
 from app.task_manager import task_manager
 from app.config import load_config
+from app import database as db
 
 # 配置日志
 logging.basicConfig(
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("正在关闭...")
     await task_manager.stop()
+    await db.close_db()
 
 
 app = FastAPI(
