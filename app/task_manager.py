@@ -39,6 +39,10 @@ class TaskManager:
         )
         # 上传协程追踪：task_id -> asyncio.Task，重试时可取消旧任务
         self._upload_tasks: dict = {}
+        # 上传重试计数：task_id -> 已重试次数
+        self._upload_retry_counts: dict = {}
+        # 自动重试计时器
+        self._last_retry_time: float = 0.0
         # 上传速度跟踪：per-task 已上传字节 → monitor loop 汇总算总速度
         self._task_uploaded_bytes: dict = {}   # task_id -> 当前已上传字节
         self._upload_total_snapshot: int = 0   # 上次快照时的总字节
@@ -223,7 +227,12 @@ class TaskManager:
                 try:
                     await self._sync_aria2_tasks()
                 except Exception as e:
-                    logger.debug(f"任务同步异常: {e}")
+                    logger.warning(f"任务同步异常: {e}")
+                    # DB 连接可能异常，尝试重建
+                    try:
+                        await db.reconnect_db()
+                    except Exception:
+                        pass
 
                 # 定期兜底清理已完成任务的残留本地文件（每 60 秒）
                 if now - self._last_cleanup_time >= 60:
@@ -232,6 +241,14 @@ class TaskManager:
                         await self._cleanup_completed_files()
                     except Exception as e:
                         logger.debug(f"清理异常: {e}")
+
+                # 定期自动重试失败的上传任务（每 30 秒）
+                if now - self._last_retry_time >= 30:
+                    self._last_retry_time = now
+                    try:
+                        await self._auto_retry_failed_uploads()
+                    except Exception as e:
+                        logger.debug(f"自动重试异常: {e}")
 
                 await asyncio.sleep(2)
             except asyncio.CancelledError:
@@ -439,7 +456,8 @@ class TaskManager:
             # 获取 aria2 全部任务
             active = await self.aria2.tell_active() or []
             waiting = await self.aria2.tell_waiting(0, 1000) or []
-            stopped = await self.aria2.tell_stopped(0, 1000) or []
+            # stopped 任务大部分已在 _terminal_gids 中缓存，少量拉取即可
+            stopped = await self.aria2.tell_stopped(0, 100) or []
         except Exception as e:
             # aria2 连接失败时静默跳过（仅每 30 秒打一次日志）
             logger.debug(f"aria2 轮询失败: {e}")
@@ -541,15 +559,16 @@ class TaskManager:
                     logger.info(f"发现 aria2 任务: {gid} ({parsed['filename']}) 状态={initial_status}")
                     await self._broadcast_task_update(task_id)
 
+                    # 已入库时即标记终态
+                    if initial_status in ("completed", "failed", "cancelled"):
+                        self._terminal_gids.add(gid)
+
                     # 如果发现时已经完成，触发上传
                     if aria2_status == "complete":
                         local_path = parsed["file_path"]
                         if local_path:
                             t = asyncio.create_task(self._handle_download_complete(task_id, gid))
                             self._upload_tasks[task_id] = t
-                        else:
-                            await db.update_task(task_id, status="completed")
-                            await self._broadcast_task_update(task_id)
                     continue
 
             # 已入库的任务，更新状态
@@ -598,7 +617,9 @@ class TaskManager:
                 update_data["status"] = "cancelled"
 
             await db.update_task(task_id, **update_data)
-            await self._broadcast_task_update(task_id)
+            # 合并更新数据到已有 task 记录用于广播，避免再次查库
+            task.update(update_data)
+            await self._broadcast_task_update(task_id, task)
 
             # 下载完成 → 触发上传
             if aria2_status == "complete" and current_status != "uploading":
@@ -754,16 +775,31 @@ class TaskManager:
             return
         try:
             all_tasks = await db.get_all_tasks()
+            max_retries = self.config["general"].get("max_retries", 3)
             for task in all_tasks:
-                if task["status"] != "completed":
+                status = task["status"]
+                task_id = task["task_id"]
+
+                # 已完成：清理残留文件
+                should_clean = (status == "completed")
+
+                # 失败且重试次数耗尽：清理文件释放磁盘
+                if status == "failed":
+                    retries = self._upload_retry_counts.get(task_id, 0)
+                    if retries >= max_retries:
+                        should_clean = True
+
+                if not should_clean:
                     continue
+
                 local_path = task.get("local_path", "")
                 if not local_path:
                     continue
                 local_path = self._get_upload_path(local_path)
                 if not local_path or not os.path.exists(local_path):
                     continue
-                logger.info(f"兜底清理：删除已完成任务的残留文件: {local_path}")
+                label = "失败(重试耗尽)" if status == "failed" else "已完成"
+                logger.info(f"兜底清理：删除{label}任务的残留文件: {local_path}")
                 try:
                     if os.path.isdir(local_path):
                         shutil.rmtree(local_path)
@@ -773,7 +809,44 @@ class TaskManager:
                 except Exception as e:
                     logger.warning(f"兜底清理失败: {local_path}, {e}")
         except Exception as e:
-            logger.debug(f"清理已完成文件异常: {e}")
+            logger.debug(f"清理文件异常: {e}")
+
+    async def _auto_retry_failed_uploads(self):
+        """自动重试失败的上传任务，超过 max_retries 次后放弃并清理本地文件"""
+        max_retries = self.config["general"].get("max_retries", 3)
+        try:
+            all_tasks = await db.get_all_tasks()
+            for task in all_tasks:
+                if task["status"] != "failed":
+                    continue
+
+                task_id = task["task_id"]
+
+                # 已经在重试中的跳过
+                if task_id in self._upload_tasks:
+                    continue
+
+                # 没有本地文件的跳过（不是上传失败）
+                local_path = task.get("local_path", "")
+                if not local_path:
+                    continue
+                local_path = self._get_upload_path(local_path)
+                if not local_path or not os.path.exists(local_path):
+                    continue
+
+                retries = self._upload_retry_counts.get(task_id, 0)
+                if retries >= max_retries:
+                    # 重试耗尽，跳过（文件清理由 _cleanup_completed_files 处理）
+                    continue
+
+                # 发起重试
+                self._upload_retry_counts[task_id] = retries + 1
+                logger.info(f"自动重试上传任务 {task_id} ({retries+1}/{max_retries})")
+                t = asyncio.create_task(self._retry_upload(task_id))
+                self._upload_tasks[task_id] = t
+
+        except Exception as e:
+            logger.debug(f"自动重试扫描异常: {e}")
 
     # ===========================================
     # 上传
@@ -915,9 +988,9 @@ class TaskManager:
             error = result.get("error", "上传失败")
             raise Exception(error)
 
-    async def _broadcast_task_update(self, task_id: str):
-        """广播任务状态更新"""
-        task = await db.get_task(task_id)
+    async def _broadcast_task_update(self, task_id: str, task_data: dict = None):
+        """广播任务状态更新（优先使用传入的 task_data 避免查库）"""
+        task = task_data or await db.get_task(task_id)
         if task:
             await self.broadcast({
                 "type": "task_update",

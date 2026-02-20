@@ -721,6 +721,24 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // 清除失败任务
+    document.getElementById('btn-clear-failed').addEventListener('click', async () => {
+        const failedCount = Object.values(state.tasks)
+            .filter(t => t.status === 'failed').length;
+        if (failedCount === 0) {
+            showToast('没有失败的任务', 'info');
+            return;
+        }
+        if (!confirm(`确认清除 ${failedCount} 个失败的任务记录？`)) return;
+        try {
+            const result = await apiCall('/api/tasks/clear-failed', { method: 'POST' });
+            showToast(result.message, 'success');
+            fetchAllTasks();
+        } catch (e) {
+            showToast('清除失败: ' + e.message, 'error');
+        }
+    });
+
     // 弹窗
     document.getElementById('modal-close').addEventListener('click', closeModal);
     document.getElementById('modal-cancel').addEventListener('click', closeModal);

@@ -3,8 +3,10 @@
 import aiosqlite
 from pathlib import Path
 from typing import Optional
-import json
+import logging
 import asyncio
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent.parent / "tasks.db"
 
@@ -30,7 +32,6 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 # 全局连接实例（复用，避免每次操作都开关连接）
 _db_conn: Optional[aiosqlite.Connection] = None
-_db_lock = asyncio.Lock()
 
 
 async def _get_conn() -> aiosqlite.Connection:
@@ -45,10 +46,25 @@ async def _get_conn() -> aiosqlite.Connection:
     return _db_conn
 
 
+async def reconnect_db():
+    """强制重建数据库连接（连接异常时调用）"""
+    global _db_conn
+    if _db_conn is not None:
+        try:
+            await _db_conn.close()
+        except Exception:
+            pass
+        _db_conn = None
+    return await _get_conn()
+
+
 async def init_db():
     """初始化数据库"""
     conn = await _get_conn()
     await conn.execute(CREATE_TABLE_SQL)
+    # 为 aria2_gid 创建索引，加速按 GID 查询
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_gid ON tasks(aria2_gid)")
     await conn.commit()
 
 
@@ -95,10 +111,10 @@ async def get_all_tasks() -> list:
         return [dict(row) for row in rows]
 
 
-async def update_task(task_id: str, **kwargs) -> Optional[dict]:
-    """更新任务字段"""
+async def update_task(task_id: str, **kwargs) -> None:
+    """更新任务字段（轻量版，不返回更新后的任务）"""
     if not kwargs:
-        return await get_task(task_id)
+        return
 
     fields = ", ".join(f"{k} = ?" for k in kwargs)
     values = list(kwargs.values())
@@ -110,7 +126,6 @@ async def update_task(task_id: str, **kwargs) -> Optional[dict]:
         values
     )
     await conn.commit()
-    return await get_task(task_id)
 
 
 async def delete_task(task_id: str) -> bool:

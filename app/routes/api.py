@@ -91,6 +91,18 @@ async def clear_completed_tasks():
     return {"success": True, "message": f"已清除 {count} 个任务"}
 
 
+@router.post("/tasks/clear-failed")
+async def clear_failed_tasks():
+    """清除所有失败的任务"""
+    tasks = await task_manager.get_all_tasks()
+    count = 0
+    for t in tasks:
+        if t["status"] == "failed":
+            await task_manager.delete_task(t["task_id"])
+            count += 1
+    return {"success": True, "message": f"已清除 {count} 个失败任务"}
+
+
 @router.post("/tasks/clear-all")
 async def clear_all_tasks():
     """清除所有任务"""
