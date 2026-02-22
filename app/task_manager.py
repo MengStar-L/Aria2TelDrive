@@ -57,6 +57,7 @@ class TaskManager:
         self._cpu_speed_limit: int = 0  # 当前速度限制(bytes/sec)，0=无限制
         self._cpu_info: dict = {}
         self._cpu_samples: list = []  # CPU 采样历史，用于滑动平均
+        self._last_download_speed: int = 0  # 缓存最近的 aria2 下载速度
 
     def _init_clients(self):
         """根据当前配置初始化客户端"""
@@ -238,6 +239,23 @@ class TaskManager:
                     except Exception:
                         pass
 
+                # 独立广播 global_stat（不依赖 aria2 是否连接成功）
+                try:
+                    broadcast_data = {
+                        "download_speed": self._last_download_speed,
+                        "upload_speed": int(self._upload_speed),
+                    }
+                    if self._disk_usage_info:
+                        broadcast_data["disk"] = self._disk_usage_info
+                    if self._cpu_info:
+                        broadcast_data["cpu"] = self._cpu_info
+                    await self.broadcast({
+                        "type": "global_stat",
+                        "data": broadcast_data
+                    })
+                except Exception:
+                    pass
+
                 # 定期兜底清理已完成任务的残留本地文件（每 60 秒）
                 if now - self._last_cleanup_time >= 60:
                     self._last_cleanup_time = now
@@ -380,6 +398,18 @@ class TaskManager:
     async def _check_cpu_usage(self):
         """检测 CPU 使用率，通过限制总下载速度控制资源占用"""
         cpu_limit = self.config["general"].get("cpu_limit", 85)
+
+        # 始终采集 CPU 数据用于仪表盘显示
+        try:
+            raw_pct = psutil.cpu_percent(interval=None)
+            self._cpu_samples.append(raw_pct)
+            if len(self._cpu_samples) > 3:
+                self._cpu_samples.pop(0)
+            cpu_pct = sum(self._cpu_samples) / len(self._cpu_samples)
+        except Exception as e:
+            logger.debug(f"检测 CPU 使用失败: {e}")
+            return
+
         if cpu_limit <= 0:
             if self._cpu_speed_limit > 0:
                 self._cpu_speed_limit = 0
@@ -388,16 +418,16 @@ class TaskManager:
                         {"max-overall-download-limit": "0"})
                 except Exception:
                     pass
-            self._cpu_info = {}
+            # 即使不限制也显示 CPU 数据
+            self._cpu_info = {
+                "percent": round(cpu_pct, 1),
+                "limit": 0,
+                "throttled": 0,
+                "speed_limit": 0
+            }
             return
 
         try:
-            raw_pct = psutil.cpu_percent(interval=None)
-            # 滑动平均：保留最近 3 次采样（约 6 秒窗口），减少波动
-            self._cpu_samples.append(raw_pct)
-            if len(self._cpu_samples) > 3:
-                self._cpu_samples.pop(0)
-            cpu_pct = sum(self._cpu_samples) / len(self._cpu_samples)
             cpu_lower = cpu_limit * 0.75
 
             # 限流级别用于前端显示
@@ -469,26 +499,10 @@ class TaskManager:
 
         all_aria2_tasks = active + waiting + stopped
 
-        # 广播全局统计
+        # 获取 aria2 下载速度（供 monitor_loop 广播使用）
         try:
             stat = await self.aria2.get_global_stat()
-            broadcast_data = {
-                "download_speed": int(stat.get("downloadSpeed", 0)),
-                "upload_speed": int(self._upload_speed),
-                "active": len(active),
-                "waiting": len(waiting),
-                "stopped": len(stopped)
-            }
-            # 附加磁盘使用信息
-            if self._disk_usage_info:
-                broadcast_data["disk"] = self._disk_usage_info
-            # 附加 CPU 使用信息
-            if self._cpu_info:
-                broadcast_data["cpu"] = self._cpu_info
-            await self.broadcast({
-                "type": "global_stat",
-                "data": broadcast_data
-            })
+            self._last_download_speed = int(stat.get("downloadSpeed", 0))
         except Exception:
             pass
 

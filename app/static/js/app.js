@@ -312,8 +312,11 @@ function handleWSMessage(msg) {
                         const limitStr = limitKB >= 1024 ? `${(limitKB / 1024).toFixed(1)}MB/s` : `${Math.round(limitKB)}KB/s`;
                         cpuLabel.textContent = `CPU 偏高 · 限速 ${limitStr}`;
                         cpuLabel.style.color = '#fb923c';
-                    } else {
+                    } else if (cpu.limit > 0) {
                         cpuLabel.textContent = `CPU (上限 ${cpu.limit}%)`;
+                        cpuLabel.style.color = '';
+                    } else {
+                        cpuLabel.textContent = 'CPU 使用率';
                         cpuLabel.style.color = '';
                     }
                 }
