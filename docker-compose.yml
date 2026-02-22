@@ -1,6 +1,6 @@
 services:
   aria2teldrive:
-    image: mengstarl/aria2teldrive:latest
+    image: mengstarr/aria2teldrive:latest
     container_name: aria2teldrive
     restart: unless-stopped
     ports:
@@ -11,15 +11,12 @@ services:
       - ./downloads:/downloads
     environment:
       - TZ=Asia/Shanghai
-      # 以下环境变量可覆盖 config.toml 中的配置（优先级: 环境变量 > config.toml > 默认值）
-      # --- server ---
-      # - SERVER_PORT=8010
-      # --- aria2 ---
-      # - ARIA2_RPC_URL=http://localhost
-      # - ARIA2_RPC_PORT=6800
+      # aria2 RPC 地址指向同网络下的 aria2 容器
+      - ARIA2_RPC_URL=http://aria2
+      - ARIA2_RPC_PORT=6800
       # - ARIA2_RPC_SECRET=
       # - ARIA2_MAX_CONCURRENT=3
-      # - ARIA2_DOWNLOAD_DIR=/downloads
+      - ARIA2_DOWNLOAD_DIR=/downloads
       # --- teldrive ---
       # - TELDRIVE_API_HOST=http://localhost:7888
       # - TELDRIVE_ACCESS_TOKEN=your_jwt_token
@@ -33,3 +30,21 @@ services:
       # - GENERAL_AUTO_DELETE=true
       # - GENERAL_MAX_DISK_USAGE=0
       # - GENERAL_CPU_LIMIT=85
+    depends_on:
+      - aria2
+
+  aria2:
+    image: p3terx/aria2-pro:latest
+    container_name: aria2
+    restart: unless-stopped
+    ports:
+      - "6800:6800"
+    volumes:
+      - ./downloads:/downloads
+      - ./aria2-config:/config
+    environment:
+      - RPC_PORT=6800
+      - RPC_SECRET=
+      - PUID=0
+      - PGID=0
+      - TZ=Asia/Shanghai

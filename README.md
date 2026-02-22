@@ -21,17 +21,19 @@ aria2 下载 + TelDrive 上传中转服务 —— 通过 Web 面板管理下载�
 
 ### 方式一：Docker 部署（推荐）
 
+> **说明**：Docker 镜像**不包含** aria2，需单独部署 aria2 服务。推荐使用 docker-compose 一键启动。
+
 #### 使用 docker-compose
 
 1. 下载配置文件：
 
 ```bash
 mkdir aria2teldrive && cd aria2teldrive
-wget https://raw.githubusercontent.com/MengStar-L/Aria2TelDrive/main/config.example.toml -O config.toml
+wget https://raw.githubusercontent.com/MengStar-L/Aria2TelDrive/main/config.example.toml -O data/config.toml
 wget https://raw.githubusercontent.com/MengStar-L/Aria2TelDrive/main/docker-compose.yml
 ```
 
-2. 编辑 `config.toml` 填入你的信息（或直接在 `docker-compose.yml` 中通过环境变量配置）
+2. 编辑 `data/config.toml` 填入你的信息（或直接在 `docker-compose.yml` 中通过环境变量配置）
 
 3. 启动服务：
 
@@ -39,7 +41,11 @@ wget https://raw.githubusercontent.com/MengStar-L/Aria2TelDrive/main/docker-comp
 docker-compose up -d
 ```
 
+> `docker-compose.yml` 中已包含 aria2（使用 [p3terx/aria2-pro](https://hub.docker.com/r/p3terx/aria2-pro)）和 aria2teldrive 两个服务，会自动通过 Docker 网络互通。
+
 #### 使用 docker run
+
+需要先自行部署 aria2，然后启动 aria2teldrive：
 
 ```bash
 docker run -d \
@@ -49,15 +55,20 @@ docker run -d \
   -v $(pwd)/data:/data \
   -v $(pwd)/downloads:/downloads \
   -e TZ=Asia/Shanghai \
-  mengstarl/aria2teldrive:latest
+  -e ARIA2_RPC_URL=http://your-aria2-host \
+  -e ARIA2_RPC_PORT=6800 \
+  -e ARIA2_DOWNLOAD_DIR=/downloads \
+  mengstarr/aria2teldrive:latest
 ```
+
+> **注意**：`ARIA2_RPC_URL` 需指向你的 aria2 RPC 地址。如果 aria2 和本服务在同一台机器上，可使用 `--network host` 或 Docker 网络。
 
 #### 卷映射说明
 
 | 容器路径 | 说明 | 建议 |
 |---------|------|------|
 | `/data` | 配置和数据目录，包含 `config.toml` 和 `tasks.db` | **必须映射**，确保配置和任务记录持久化 |
-| `/downloads` | 下载文件临时存放目录 | **必须映射**，确保下载文件可访问 |
+| `/downloads` | 下载文件临时存放目录 | **必须映射**，需与 aria2 的下载目录共享 |
 
 > **提示**：映射 `/data` 目录后，首次启动会自动生成默认 `config.toml`，编辑后重启容器即可。也可以直接将 `config.toml` 放入映射的 `data` 目录。
 
@@ -68,6 +79,7 @@ docker run -d \
 完整变量列表见 [docker-compose.yml](docker-compose.yml) 中的注释，常用变量：
 
 ```bash
+ARIA2_RPC_URL=http://aria2          # aria2 RPC 地址
 TELDRIVE_API_HOST=http://your-teldrive:7888
 TELDRIVE_ACCESS_TOKEN=your_jwt_token
 TELDRIVE_CHANNEL_ID=123456
@@ -75,7 +87,6 @@ ARIA2_MAX_CONCURRENT=3
 GENERAL_AUTO_DELETE=true
 ```
 
-> **注意**：Docker 镜像已内置 aria2，无需单独安装。`config.toml` 中 aria2 RPC 地址保持默认 `http://localhost:6800` 即可。
 
 ---
 
