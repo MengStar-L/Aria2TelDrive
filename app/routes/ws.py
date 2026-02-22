@@ -10,9 +10,11 @@ router = APIRouter()
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """WebSocket 连接，推送实时任务进度"""
-    # 认证检查
+    # 认证检查：优先 query param token，回退到 cookie（刷新页面时 cookie 仍有效）
     if is_auth_enabled():
         token = ws.query_params.get("token")
+        if not token:
+            token = ws.cookies.get("auth_token")
         if not token or not verify_token(token):
             await ws.close(code=4001, reason="未认证")
             return
