@@ -193,6 +193,18 @@ class TaskManager:
                 dead.add(ws)
         self._ws_clients -= dead
 
+    def get_global_stat(self) -> dict:
+        """获取当前缓存的全局统计数据（供 WS init 立即推送）"""
+        data = {
+            "download_speed": self._last_download_speed,
+            "upload_speed": int(self._upload_speed),
+        }
+        if self._disk_usage_info:
+            data["disk"] = self._disk_usage_info
+        if self._cpu_info:
+            data["cpu"] = self._cpu_info
+        return data
+
     # ===========================================
     # 核心：监控循环 — 主动轮询 aria2 全部任务
     # ===========================================

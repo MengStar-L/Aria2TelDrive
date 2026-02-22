@@ -20,11 +20,12 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     task_manager.register_ws(ws)
     try:
-        # 发送当前所有任务状态
+        # 发送当前所有任务状态 + 监控数据
         tasks = await task_manager.get_all_tasks()
+        global_stat = task_manager.get_global_stat()
         await ws.send_json({
             "type": "init",
-            "data": {"tasks": tasks}
+            "data": {"tasks": tasks, "global_stat": global_stat}
         })
         # 保持连接，接收客户端心跳
         while True:

@@ -220,10 +220,10 @@ function updateWSStatus(connected) {
     const text = document.getElementById('ws-status-text');
     if (connected) {
         dot.classList.add('connected');
-        text.textContent = '已连接';
+        text.textContent = 'aria2 已连接';
     } else {
         dot.classList.remove('connected');
-        text.textContent = '未连接';
+        text.textContent = '连接中...';
     }
 }
 
@@ -239,6 +239,10 @@ function handleWSMessage(msg) {
             }
             renderTasks();
             updateDashboard();
+            // 立即渲染监控数据（速度/磁盘/CPU）
+            if (msg.data && msg.data.global_stat) {
+                handleWSMessage({ type: 'global_stat', data: msg.data.global_stat });
+            }
             break;
 
         case 'task_update':
